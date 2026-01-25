@@ -40,6 +40,7 @@ The name comes from “seak Forth”; a small, experimental Forth runtime design
 - Comparison and boolean primitives
 
 | Word	| Stack effect	| Description |
+|-------|---------------|-------------|
 |=	    |a b -- flag	| equal       |
 |<	    |a b -- flag	| less than   |
 |>	    |a b -- flag	| greater than|
@@ -53,6 +54,7 @@ The name comes from “seak Forth”; a small, experimental Forth runtime design
 - Stack inspection
 
 | Word	| Description |
+|-------|--------------|
 | .s	| prints stack content |
 | depth	| returns stack depth |
 | ddepth | returns data depth |
@@ -60,12 +62,14 @@ The name comes from “seak Forth”; a small, experimental Forth runtime design
 - Output
 
 | Word | Description |
+|-----|---------------|
 | .    | print top stack value |
 | cr   | newline |
 
 - Control flow
 
 | Word	                    | Mode	        | Description |
+|---------------------------|---------------|---------------|
 | IF ... ELSE ... THEN	    | compile-time	| conditional execution |
 | BEGIN ... WHILE ... REPEAT| compile-time	| loop |
 | EXIT	                    | run-time	    | exit current word |
@@ -73,6 +77,7 @@ The name comes from “seak Forth”; a small, experimental Forth runtime design
 - Definitions & Compilation
 
 | Word	    | Description |
+|-----------|--------------|
 | : ;	    | define a new word |
 | IMMEDIATE	| mark a word as immediate |
 | POSTPONE	| postpone a word during compilation |
@@ -83,7 +88,7 @@ The name comes from “seak Forth”; a small, experimental Forth runtime design
 | SOURCE	| returns current input line |
 | >IN	| returns current input cursor index |
 
-**NOTE:** When defining a new word, `:` already enters COMPTIME for you and `;` goes back to INTERPRET mode. 
+**NOTE:** When defining a new word, `:` enters COMPTIME and `;` goes back to INTERPRET mode. 
 
 - Memory primitives
 
@@ -91,12 +96,13 @@ Raw data space control
 
 The interpreter provides a raw data space you can control manually.
 
-| Word	 | Stack effect	| Description
-| HERE	 | -- addr	    | returns current data pointer (address)
-| ALLOC	 | n --	        | allocate n cells in data space
-| GROW	 | n --	        | increase data space capacity by n cells
-| clear.d|	--	        | free and reset data space
-| constvar: | n "name" -- | reserve a cell and assign it as a word. example : `420 constvar: myvar`
+| Word	 | Stack effect	| Description |
+|--------|--------------|--------------|
+| HERE	 | -- addr	    | returns current data pointer (address) |
+| ALLOC	 | n --	        | allocate n cells in data space |
+| GROW	 | n --	        | increase data space capacity by n cells |
+| clear.d|	--	        | free and reset data space |
+| constvar: | n "name" -- | reserve a cell and assign it as a word. example : `420 constvar: myvar`| 
 
 `HERE` returns the address of the next free cell, and `ALLOC` increments the data pointer by a number of cells.
 
@@ -177,6 +183,8 @@ Running
 It automatically loads `bootstrap.fs` and drops into a REPL:
 
 ```shell
+Loading bootstrap.fs...
+
 Welcome to skforth :D
 skforth>
 ```
