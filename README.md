@@ -27,6 +27,11 @@ The name comes from “seak Forth”; a small, experimental Forth runtime design
 - `IMMEDIATE`
 - `LITERAL`
 
+`LITERAL` pushes a value at runtime.
+When used during compilation, it emits code that will push the value on the stack when the word is executed.
+
+Some words (such as `TYPE`) are aware of the current mode and may emit code when used during compilation.
+
 **POSTPONE is not implemented** - the current system makes it unnecessary.
 
 - Stack and arithmetic primitives
@@ -321,7 +326,7 @@ skforth is intended as:
 
 Possible next steps:
 
-- implement full string support
+- implement native string literals (e.g. S")
 - add file I/O
 - improve error handling
 - implement DO LOOP
