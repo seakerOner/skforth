@@ -3,6 +3,8 @@
 skforth is a lightweight Forth interpreter written in C.
 The name comes from “seak Forth”; a small, experimental Forth runtime designed for **simplicity**, **flexibility**, and **extensibility**.
 
+skforth intentionally prioritizes explicit control flow and simplicity over standard compliance.
+
 ## It implements a classic stack-based Forth model, including:
 
 - main stack
@@ -33,6 +35,11 @@ When used during compilation, it emits code that will push the value on the stac
 Some words (such as `TYPE`) are aware of the current mode and may emit code when used during compilation.
 
 **POSTPONE is not implemented** - the current system makes it unnecessary.
+
+> Memory in skforth is cell-addressed by default.
+> Byte-level access is explicit and opt-in via BYTE+, BYTES, and COPY-BYTES.
+
+---
 
 - Stack and arithmetic primitives
 
