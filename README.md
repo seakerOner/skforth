@@ -1,7 +1,7 @@
 # skforth
 
-skforth is a lightweight, educational Forth interpreter written in C.
-The name comes from “seak Forth”; a small, experimental Forth runtime designed for learning and rapid prototyping.
+skforth is a lightweight Forth interpreter written in C.
+The name comes from “seak Forth”; a small, experimental Forth runtime designed for **simplicity**, **flexibility**, and **extensibility**.
 
 ## It implements a classic stack-based Forth model, including:
 
@@ -16,6 +16,18 @@ The name comes from “seak Forth”; a small, experimental Forth runtime design
 - loading `.fs` files inside the REPL
 
 ## Features
+
+### Core model
+
+- `INTERPRET` \ `COMPTIME` modes
+- `:` `;` word definition
+- `IF ... ELSE ... THEN`
+- `BEGIN ... WHILE ... REPEAT`
+- `EXIT`
+- `IMMEDIATE`
+- `LITERAL`
+
+**POSTPONE is not implemented** - the current system makes it unnecessary.
 
 - Stack and arithmetic primitives
 
@@ -65,6 +77,8 @@ The name comes from “seak Forth”; a small, experimental Forth runtime design
 |-----|---------------|
 | .    | print top stack value |
 | cr   | newline |
+| TYPE | print string at (addr len) |
+| ."  | print string literal (works in both interpret and compile modes) |
 
 - Control flow
 
@@ -80,15 +94,13 @@ The name comes from “seak Forth”; a small, experimental Forth runtime design
 |-----------|--------------|
 | : ;	    | define a new word |
 | IMMEDIATE	| mark a word as immediate |
-| POSTPONE	| postpone a word during compilation |
 | COMPTIME	| switch to compile mode |
 | INTERPRET	| switch to interpret mode |
 | INTERPRET-TOKEN | interpret a token manually |
 | PARSE-NAME	| parse next token from input |
+| PARSE-STRING | parse string until `"`, excluding the `"` |
 | SOURCE	| returns current input line |
 | >IN	| returns current input cursor index |
-
-**NOTE:** When defining a new word, `:` enters COMPTIME and `;` goes back to INTERPRET mode. 
 
 - Memory primitives
 
@@ -106,9 +118,45 @@ The interpreter provides a raw data space you can control manually.
 
 `HERE` returns the address of the next free cell, and `ALLOC` increments the data pointer by a number of cells.
 
+### Cell arithmetic helpers
+
+| Word | Stack effect | Description |
+|------|--------------|-------------|
+| CELLS | bytes -- cells | convert bytes to cells |
+| CELL+ | addr -- addr+cell | advance pointer by one cell |
+| BYTE+ | addr -- addr+byte | advance pointer by one byte |
+| BYTES | n -- n*byte | convert cells to bytes |
+| ceil-cells | bytes -- cells | ceil division by cell size |
+
+### Memory copy
+
+| Word | Stack effect | Description |
+|------|--------------|-------------|
+| `COPY-CELLS` | dest src len | copy len cells |
+| `COPY-BYTES` | dest src len | copy len bytes |
+
+---
+
+## Byte operations
+
+| Word | Stack effect | Description |
+|------|--------------|-------------|
+| `b@` | addr -- byte | read a byte |
+| `b!` | addr byte -- | write a byte |
+
+---
+
+## `see` (word inspection)
+
+`see` prints the definition of a word:
+
+```forth
+see word-name
 --- 
 
+
 - The bootstrap file `bootstrap.fs` **adds additional utilities**:
+( You can also INCLUDE the `std.fs` for further utilities )
 
 var:
 
@@ -116,6 +164,26 @@ var:
 Creates a variable in data space.
 
 var: x
+```
+
+."
+
+```text
+skforth> : test ." hello " cr ;
+skforth> test
+hello
+```
+
+see
+
+```text
+skforth> see var:
+: var:
+  PARSE-NAME
+  CREATE
+  LIT 0
+  ,
+;
 ```
 
 buf:
@@ -140,6 +208,7 @@ buf-data (data pointer)
 - Debugging & Diagnostics
 
 | Word	| Description |
+|-------|-------------|
 |.memstats	| print memory usage stats |
 | words	| list defined words |
 | clear.s | clear the main stack |
@@ -150,8 +219,6 @@ buf-data (data pointer)
 
 `CELLSIZEBYTES` — size of a cell in bytes
 
-`CELL+`, `CELLS` — cell arithmetic helpers
-
 `sqr`, `nip`, `tuck`, `<>`, etc.
 
 ---
@@ -161,7 +228,7 @@ buf-data (data pointer)
 You can load `.fs` files directly from the REPL using:
 
 ```text
-INCLUDE myfile.fs
+INCLUDE std.fs
 ```
 This lets you extend the interpreter without modifying the C code.
 
@@ -246,16 +313,16 @@ The interpreter provides some debugging tools:
 
 skforth is intended as:
 
-- an educational project to learn how Forth works internally
 - a minimal Forth implementation
 - a base for experimentation and expansion
+- simply to have a Forth as I see fit
 
 # Future Improvements
 
 Possible next steps:
 
-- implement string support
+- implement full string support
 - add file I/O
 - improve error handling
 - implement DO LOOP
-- add standard library words
+- add standard library words expansion

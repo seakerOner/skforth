@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SOURCEINFO 0
+#define SOURCEINFO 1
 
 #if defined(SOURCEINFO) && SOURCEINFO == 1
 #define print_source_line(void)                                                \
@@ -17,6 +17,11 @@ void print_source_line(void) {}
 #define MAX_HERE_SPACE 1024 * 64
 #define CF_STACK 256
 #define UNUSED(x) (void)(x)
+
+#define SETREDCOLOR "\033[31m"
+#define SETGREENCOLOR "\033[32m"
+#define RESETALLSTYLES "\033[0m"
+
 typedef unsigned long long u64;
 
 typedef long long i64;
@@ -72,19 +77,28 @@ void execute(WORD *w);
 
 void allstats(WORD *w) {
   UNUSED(w);
-  printf("skforth stats: \n NAME | MAX_BYTES | CURRENT_BYTES \n[STACK] "
-         "%llu %llu\n[DATA] %llu %llu\n[CODE] %llu "
-         " %s\n[RSTACK] %llu %llu\n[CFSTACK] %llu %llu\n",
-         ((u64)STACK_SIZE * 64), sp * 64, data_cap, dp,
-         ((u64)MAX_HERE_SPACE * 64), "<no info>", ((u64)STACK_SIZE * 64),
-         rsp * 64, ((u64)CF_STACK * 64), cfsp * 64);
+  printf("skforth stats: \n NAME | MAX_BYTES | CURRENT_BYTES | MAX_CELLS | "
+         "CURRENT_CELLS\n"
+         "[STACK] %llu %llu %llu %llu\n[DATA] %llu %llu %llu %llu\n[CODE] %llu "
+         " %s %llu %s\n[RSTACK] %llu %llu %llu %llu\n[CFSTACK] %llu %llu %llu "
+         "%llu\n",
+         ((u64)STACK_SIZE * CELLSIZE), sp * CELLSIZE, (u64)STACK_SIZE, sp,
+         data_cap * CELLSIZE, dp * CELLSIZE, data_cap, dp,
+         ((u64)MAX_HERE_SPACE * CELLSIZE), "<no info>", (u64)MAX_HERE_SPACE,
+         "<no info>", ((u64)STACK_SIZE * CELLSIZE), rsp * CELLSIZE,
+         (u64)STACK_SIZE, rsp, ((u64)CF_STACK * CELLSIZE), cfsp * CELLSIZE,
+         (u64)CF_STACK, (u64)cfsp);
 }
 
 #define CFPUSH(x)                                                              \
-  cfsp >= (u64)CF_STACK ? (printf("[ERROR] Control Flow overflow"), NULL)      \
+  cfsp >= (u64)CF_STACK ? (printf("%s[ERROR] Control Flow overflow%s\n",       \
+                                  SETREDCOLOR, RESETALLSTYLES),                \
+                           NULL)                                               \
                         : (cfstack[cfsp++] = (x))
 #define CFPOP()                                                                \
-  (cfsp == (u64)0 ? (printf("[ERROR] Control Flow underflow\n"), NULL)         \
+  (cfsp == (u64)0 ? (printf("%s[ERROR] Control Flow underflow%s\n",            \
+                            SETREDCOLOR, RESETALLSTYLES),                      \
+                     NULL)                                                     \
                   : cfstack[--cfsp])
 // instruction pointer
 u64 *ip = NULL;
@@ -92,7 +106,7 @@ MODE f_mode = INTERPRET;
 
 int spush(u64 v) {
   if (sp == STACK_SIZE) {
-    printf("[ERROR] Stack is full\n");
+    printf("%s[ERROR] Stack is full\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return 0;
   }
@@ -101,17 +115,82 @@ int spush(u64 v) {
 }
 u64 spop(void) {
   if (sp == 0) {
-    printf("[ERROR] Stack is empty\n");
+    printf("%s[ERROR] Stack is empty\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return 0xDEADBEEF;
   }
   return stack[--sp];
 }
 
+void memcpy_cells(WORD *w) {
+  UNUSED(w);
+  if (sp < 3) {
+    printf("%s[ERROR] Stack is too small\n%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+  }
+  u64 *dest = (u64 *)spop();
+  u64 *src = (u64 *)spop();
+  u64 len = spop();
+  if (!src) {
+    printf("%s[ERROR] Invalid address source to copy from\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
+    print_source_line();
+  }
+  u64 *dest_ptr = memcpy(dest, src, (ssize_t)len * CELLSIZE);
+  if (!dest_ptr) {
+    printf("%s[ERROR] Invalid address source to copy from\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
+    spush(0);
+  }
+}
+
+void memcpy_bytes(WORD *w) {
+  UNUSED(w);
+  if (sp < 3) {
+    printf("%s[ERROR] Stack is too small\n%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+  }
+  u64 len = spop();
+  unsigned char *dest = (unsigned char *)spop();
+  unsigned char *src = (unsigned char *)spop();
+  if (!src) {
+    printf("%s[ERROR] Invalid address source to copy from\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
+    print_source_line();
+  }
+  u64 *dest_ptr = memcpy(dest, src, (ssize_t)len);
+  if (!dest_ptr) {
+    printf("%s[ERROR] Invalid address source to copy from\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
+  }
+}
+WORD *find_word(const char *name);
+
 void lit(WORD *w) {
   UNUSED(w);
   u64 value = *ip++;
   spush(value);
+}
+void literal(WORD *w) {
+  UNUSED(w);
+
+  if (f_mode == INTERPRET) {
+    printf("%s[ERROR] LITERAL only valid in compile mode%s\n", SETREDCOLOR,
+           RESETALLSTYLES);
+    return;
+  }
+
+  if (sp == 0) {
+    printf("%s[ERROR] LITERAL expects value on stack%s\n", SETREDCOLOR,
+           RESETALLSTYLES);
+    return;
+  }
+
+  u64 val = spop();
+  WORD *lit = find_word("LIT");
+
+  *here_code++ = (u64)lit;
+  *here_code++ = val;
 }
 
 char *current_line_buffer = NULL;
@@ -132,7 +211,8 @@ void in_word(WORD *w) {
 void add_word(const char *name, void (*code)(WORD *),
               u64 *continuation_wordlist, u64 flags) {
   if (here == (u64)MAX_WORDS) {
-    printf("[ERROR] Max number of WORDS reached");
+    printf("%s[ERROR] Max number of WORDS reached%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -142,6 +222,7 @@ void add_word(const char *name, void (*code)(WORD *),
   w->continuation = (u64 *)continuation_wordlist;
   w->flags = flags;
 }
+
 int streq(const char *a, const char *b) {
   while (*a && *b) {
     if (*a != *b)
@@ -164,7 +245,7 @@ WORD *find_word(const char *name) {
 void dot(WORD *w) {
   UNUSED(w);
   if (sp == 0) {
-    printf("[ERROR] Stack is empty.\n");
+    printf("%s[ERROR] Stack is empty.\n%s", SETREDCOLOR, RESETALLSTYLES);
     return;
   }
   u64 val = spop();
@@ -177,9 +258,32 @@ void words(WORD *w) {
   }
   printf("\n");
 }
+
+void type(WORD *w) {
+  UNUSED(w);
+  if (f_mode == COMPILE) {
+    WORD *word = find_word("TYPE");
+    *here_code++ = (u64)word;
+    return;
+  }
+  if (sp < 2) {
+    printf("%s[ERROR] Stack is too small.\n%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+  u64 len = spop();
+  u64 addr = spop();
+
+  unsigned char *p = (unsigned char *)addr;
+
+  for (u64 x = 0; x < len; x += 1) {
+    putchar(p[x]);
+  }
+}
+
 void cr(WORD *w) {
   UNUSED(w);
-  printf("\n");
+  putchar('\n');
 }
 // primitive: .s (print stack size and it's elements)
 void dot_stack(WORD *w) {
@@ -194,7 +298,7 @@ void dot_stack(WORD *w) {
 void add(WORD *w) {
   UNUSED(w);
   if (sp < 2) {
-    printf("[ERROR] Stack is too small\n");
+    printf("%s[ERROR] Stack is too small\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -205,7 +309,7 @@ void add(WORD *w) {
 void substract(WORD *w) {
   UNUSED(w);
   if (sp < 2) {
-    printf("[ERROR] Stack is too small\n");
+    printf("%s[ERROR] Stack is too small\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -216,7 +320,7 @@ void substract(WORD *w) {
 void multiply(WORD *w) {
   UNUSED(w);
   if (sp < 2) {
-    printf("[ERROR] Stack is too small\n");
+    printf("%s[ERROR] Stack is too small\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -227,7 +331,7 @@ void multiply(WORD *w) {
 void dup(WORD *w) {
   UNUSED(w);
   if (sp == 0) {
-    printf("[ERROR] Stack is empty \n");
+    printf("%s[ERROR] Stack is empty \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -236,7 +340,7 @@ void dup(WORD *w) {
 void double_dup(WORD *w) {
   UNUSED(w);
   if (sp < 2) {
-    printf("[ERROR] Stack is too small \n");
+    printf("%s[ERROR] Stack is too small \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -246,7 +350,7 @@ void double_dup(WORD *w) {
 void swap(WORD *w) {
   UNUSED(w);
   if (sp < 2) {
-    printf("[ERROR] Stack is too small \n");
+    printf("%s[ERROR] Stack is too small \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -258,7 +362,7 @@ void swap(WORD *w) {
 void double_swap(WORD *w) {
   UNUSED(w);
   if (sp < 4) {
-    printf("[ERROR] Stack is too small \n");
+    printf("%s[ERROR] Stack is too small \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -274,7 +378,7 @@ void double_swap(WORD *w) {
 void over(WORD *w) {
   UNUSED(w);
   if (sp < 2) {
-    printf("[ERROR] Stack is too small \n");
+    printf("%s[ERROR] Stack is too small \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -283,7 +387,7 @@ void over(WORD *w) {
 void double_over(WORD *w) {
   UNUSED(w);
   if (sp < 3) {
-    printf("[ERROR] Stack is too small \n");
+    printf("%s[ERROR] Stack is too small \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -292,7 +396,7 @@ void double_over(WORD *w) {
 void slash_mod(WORD *w) {
   UNUSED(w);
   if (sp < 2) {
-    printf("[ERROR] Stack is to small \n");
+    printf("%s[ERROR] Stack is to small \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -304,7 +408,7 @@ void slash_mod(WORD *w) {
 void rot(WORD *w) {
   UNUSED(w);
   if (sp < 3) {
-    printf("[ERROR] Stack is to small \n");
+    printf("%s[ERROR] Stack is to small \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -318,7 +422,7 @@ void rot(WORD *w) {
 void reverse_rot(WORD *w) {
   UNUSED(w);
   if (sp < 3) {
-    printf("[ERROR] Stack is to small \n");
+    printf("%s[ERROR] Stack is to small \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -349,7 +453,7 @@ void double_drop(WORD *w) {
 void equals_zero(WORD *w) {
   UNUSED(w);
   if (sp == 0) {
-    printf("[ERROR] Stack is empty \n");
+    printf("%s[ERROR] Stack is empty \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -359,7 +463,7 @@ void equals_zero(WORD *w) {
 void equals(WORD *w) {
   UNUSED(w);
   if (sp < 2) {
-    printf("[ERROR] Stack is too small \n");
+    printf("%s[ERROR] Stack is too small \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -370,7 +474,7 @@ void equals(WORD *w) {
 void lessthan(WORD *w) {
   UNUSED(w);
   if (sp < 2) {
-    printf("[ERROR] Stack is too small \n");
+    printf("%s[ERROR] Stack is too small \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -381,7 +485,7 @@ void lessthan(WORD *w) {
 void morethan(WORD *w) {
   UNUSED(w);
   if (sp < 2) {
-    printf("[ERROR] Stack is too small \n");
+    printf("%s[ERROR] Stack is too small \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -392,7 +496,7 @@ void morethan(WORD *w) {
 void morethanequal(WORD *w) {
   UNUSED(w);
   if (sp < 2) {
-    printf("[ERROR] Stack is too small \n");
+    printf("%s[ERROR] Stack is too small \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -403,7 +507,7 @@ void morethanequal(WORD *w) {
 void morethanzero(WORD *w) {
   UNUSED(w);
   if (sp < 1) {
-    printf("[ERROR] Stack is too small \n");
+    printf("%s[ERROR] Stack is too small \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -413,7 +517,7 @@ void morethanzero(WORD *w) {
 void notzero(WORD *w) {
   UNUSED(w);
   if (sp < 1) {
-    printf("[ERROR] Stack is too small \n");
+    printf("%s[ERROR] Stack is too small \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -423,26 +527,26 @@ void notzero(WORD *w) {
 void minusone(WORD *w) {
   UNUSED(w);
   if (sp == 0) {
-    printf("[ERROR] Stack is empty \n");
+    printf("%s[ERROR] Stack is empty \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
   spush(spop() - 1);
 }
-void c_at(WORD *w) {
+void b_at(WORD *w) {
   UNUSED(w);
   if (sp == 0) {
-    printf("[ERROR] Stack is empty \n");
+    printf("%s[ERROR] Stack is empty \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
   u64 addr = spop();
   spush((u64)(*(unsigned char *)addr));
 }
-void c_store(WORD *w) {
+void b_store(WORD *w) {
   UNUSED(w);
   if (sp < 2) {
-    printf("[ERROR] Stack is too small\n");
+    printf("%s[ERROR] Stack is too small\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -457,7 +561,7 @@ void add_bl(WORD *w) {
 void clear_stack_word(WORD *w) {
   UNUSED(w);
   if (sp == 0) {
-    printf("[ERROR] Stack is empty \n");
+    printf("%s[ERROR] Stack is empty \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -466,7 +570,8 @@ void clear_stack_word(WORD *w) {
 void clear_data_word(WORD *w) {
   UNUSED(w);
   if (!data_space) {
-    printf("[ERROR] There is no memory allocated in Data space to clear\n");
+    printf("%s[ERROR] There is no memory allocated in Data space to clear\n%s",
+           SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -478,14 +583,15 @@ void clear_data_word(WORD *w) {
 void grow_data(WORD *w) {
   UNUSED(w);
   if (sp == 0) {
-    printf("[ERROR] Stack is empty\n");
+    printf("%s[ERROR] Stack is empty\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
   u64 n = spop();
   void *new = realloc(data_space, (data_cap + n) * CELLSIZE);
   if (!new) {
-    printf("[ERROR] Could not regrow Data memory\n");
+    printf("%s[ERROR] Could not regrow Data memory\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -498,6 +604,22 @@ int c_next_token(char **addr, u64 *len);
 void here_data(WORD *w) {
   UNUSED(w);
   spush((u64)(data_space + dp));
+}
+
+void here_code_word(WORD *w) {
+  UNUSED(w);
+  spush((u64)here_code);
+}
+
+void alloc_code_word(WORD *w) {
+  UNUSED(w);
+  if (sp == 0) {
+    printf("%s[ERROR] Stack is empty\n%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+  }
+  u64 increment = spop();
+
+  here_code += increment;
 }
 
 void or_word(WORD *w) {
@@ -517,13 +639,14 @@ void and_word(WORD *w) {
 void alloc_data(WORD *w) {
   UNUSED(w);
   if (sp == 0) {
-    printf("[ERROR] Stack is empty\n");
+    printf("%s[ERROR] Stack is empty\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
   u64 num_cells = spop();
   if (num_cells + dp > data_cap) {
-    printf("[ERROR] Number of cells to alloc exceed Data Area capacity");
+    printf("%s[ERROR] Number of cells to alloc exceed Data Area capacity\n%s",
+           SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -533,7 +656,7 @@ void alloc_data(WORD *w) {
 void at_ptr(WORD *w) {
   UNUSED(w);
   if (sp == 0) {
-    printf("[ERROR] Stack is empty\n");
+    printf("%s[ERROR] Stack is empty\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -543,13 +666,14 @@ void at_ptr(WORD *w) {
 void write_ptr(WORD *w) {
   UNUSED(w);
   if (sp < 2) {
-    printf("[ERROR] Stack is too small\n");
+    printf("%s[ERROR] Stack is too small\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
   u64 *addr = (u64 *)spop();
   if (!addr) {
-    printf("[ERROR] Not a valid pointer given\n");
+    printf("%s[ERROR] Not a valid pointer given\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -559,12 +683,12 @@ void write_ptr(WORD *w) {
 void to_r(WORD *w) {
   UNUSED(w);
   if (sp == 0) {
-    printf("[ERROR] Stack is empty\n");
+    printf("%s[ERROR] Stack is empty\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
   if (rsp >= STACK_SIZE) {
-    printf("[ERROR] Return stack overflow\n");
+    printf("%s[ERROR] Return stack overflow\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -573,13 +697,14 @@ void to_r(WORD *w) {
 void from_r(WORD *w) {
   UNUSED(w);
   if (rsp == 0) {
-    printf("[ERROR] Return stack is empty\n");
+    printf("%s[ERROR] Return stack is empty\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
   if (sp >= STACK_SIZE) {
-    printf("[ERROR] Stack is full and cant return value from Return stack to "
-           "main stack\n");
+    printf("%s[ERROR] Stack is full and cant return value from Return stack to "
+           "main stack\n%s",
+           SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -599,7 +724,7 @@ void create_struct(WORD *ww) {
   UNUSED(ww);
 
   if (sp < 2) {
-    printf("[ERROR] CREATE expects a name\n");
+    printf("%s[ERROR] CREATE expects a name\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -607,7 +732,7 @@ void create_struct(WORD *ww) {
   char *addr = (char *)spop();
 
   if (len == 0) {
-    printf("[ERROR] CREATE expects a name\n");
+    printf("%s[ERROR] CREATE expects a name\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -615,13 +740,14 @@ void create_struct(WORD *ww) {
   char *name = strndup(addr, len);
 
   if (!name) {
-    printf("[ERROR] CREATE: strdup failed \n");
+    printf("%s[ERROR] CREATE: strdup failed \n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
 
   if (here + 1 == (u64)MAX_WORDS) {
-    printf("[ERROR] Max number of WORDS reached in dictionary area\n");
+    printf("%s[ERROR] Max number of WORDS reached in dictionary area\n%s",
+           SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -643,7 +769,7 @@ void create_struct(WORD *ww) {
 void comma(WORD *w) {
   UNUSED(w);
   if (sp == 0) {
-    printf("[ERROR] Stack is empty\n");
+    printf("%s[ERROR] Stack is empty\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -652,33 +778,57 @@ void comma(WORD *w) {
   data_space[dp++] = val;
 }
 
-void postpone(WORD *w) {
+void see_word(WORD *w) {
   UNUSED(w);
+
   execute(find_word("PARSE-NAME"));
   u64 len = spop();
   char *addr = (char *)spop();
+
   if (len == 0) {
-    printf("[ERROR] POSTPONE expects a name\n");
+    printf("%s[ERROR] see expects a name\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
 
   char *name = strndup(addr, len);
-
   if (!name) {
-    printf("[ERROR] POSTPONE expects a word name\n");
+    printf("%s[ERROR] see expects a name\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
 
-  WORD *t = find_word(name);
-  if (!t) {
-    printf("[ERROR] Unknown word: %s\n", name);
-    print_source_line();
+  WORD *w_tosee = find_word(name);
+
+  if (!w_tosee) {
+    printf("%s[ERROR] Unknown word to see: %s%s", SETREDCOLOR, RESETALLSTYLES,
+           name);
     return;
   }
 
-  *here_code++ = (u64)t;
+  printf(": %s", w_tosee->name);
+  printf("\n");
+
+  // TODO: ->code & ->continuantion=NULL is a primitive implementation
+  if (!w_tosee->continuation) {
+    printf(" <primitive>\n;\n");
+    return;
+  }
+
+  u64 *p = w_tosee->continuation;
+
+  while (*p) {
+    WORD *cw = (WORD *)*p++;
+
+    if (cw == find_word("LIT")) {
+      u64 val = *p++;
+      printf("  LIT %llu\n", val);
+    } else {
+      printf("  %s\n", cw->name);
+    }
+  }
+
+  printf(";\n");
 }
 
 void constant_var_word(WORD *w) {
@@ -687,7 +837,8 @@ void constant_var_word(WORD *w) {
   u64 len = spop();
   char *addr = (char *)spop();
   if (len == 0) {
-    printf("[ERROR] CREATE expects a name\n");
+    printf("%s[ERROR] constvar: expects a name\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -695,18 +846,17 @@ void constant_var_word(WORD *w) {
   char *name = strndup(addr, len);
 
   if (!name) {
-    printf("[ERROR] constant expects a name\n");
+    printf("%s[ERROR] constant expects a name\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
   if (sp == 0) {
-    printf("[ERROR] constant expects a value on stack\n");
+    printf("%s[ERROR] constant expects a value on stack\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
-
-  if (sp == 0)
-    return;
 
   u64 val = spop();
   ensure_data(1);
@@ -728,7 +878,8 @@ void ensure_data(u64 cells) {
     new_cap *= 2;
   void *new = realloc(data_space, new_cap * CELLSIZE);
   if (!new) {
-    printf("[ERROR] Out of memory in data space\n");
+    printf("%s[ERROR] Out of memory in data space\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -745,7 +896,8 @@ void bye(WORD *w) {
 void colon(WORD *ww) {
   UNUSED(ww);
   if (cfsp != 0) {
-    printf("[ERROR] Unresolved control structure\n");
+    printf("%s[ERROR] Unresolved control structure\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     exit(EXIT_FAILURE);
   }
@@ -754,7 +906,8 @@ void colon(WORD *ww) {
   u64 len = spop();
   char *addr = (char *)spop();
   if (len == 0) {
-    printf("[ERROR] Expected word name after ':'\n");
+    printf("%s[ERROR] Expected word name after ':'\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -762,7 +915,8 @@ void colon(WORD *ww) {
   char *name = strndup(addr, len);
 
   if (!name) {
-    printf("[ERROR] Expected word name after ':'\n");
+    printf("%s[ERROR] Expected word name after ':'\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -798,7 +952,8 @@ void branch(WORD *w) {
 void if_word(WORD *w) {
   UNUSED(w);
   if (f_mode != COMPILE) {
-    printf("[ERROR] IF only valid in compile mode\n");
+    printf("%s[ERROR] IF only valid in compile mode\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -810,7 +965,8 @@ void if_word(WORD *w) {
 void else_word(WORD *w) {
   UNUSED(w);
   if (f_mode != COMPILE) {
-    printf("[ERROR] ELSE only valid in compile mode\n");
+    printf("%s[ERROR] ELSE only valid in compile mode\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -824,7 +980,8 @@ void else_word(WORD *w) {
 void then_word(WORD *w) {
   UNUSED(w);
   if (f_mode != COMPILE) {
-    printf("[ERROR] THEN only valid in compile mode\n");
+    printf("%s[ERROR] THEN only valid in compile mode\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -835,7 +992,8 @@ void then_word(WORD *w) {
 void begin(WORD *w) {
   UNUSED(w);
   if (f_mode != COMPILE) {
-    printf("[ERROR] BEGIN is only valid in compile mode\n");
+    printf("%s[ERROR] BEGIN is only valid in compile mode\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -844,7 +1002,8 @@ void begin(WORD *w) {
 void while_word(WORD *w) {
   UNUSED(w);
   if (f_mode != COMPILE) {
-    printf("[ERROR] WHILE is only valid in compile mode\n");
+    printf("%s[ERROR] WHILE is only valid in compile mode\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -857,7 +1016,8 @@ void while_word(WORD *w) {
 void repeat(WORD *w) {
   UNUSED(w);
   if (f_mode != COMPILE) {
-    printf("[ERROR] REPEAT is only valid in compile mode\n");
+    printf("%s[ERROR] REPEAT is only valid in compile mode\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -887,20 +1047,22 @@ void include_forth_file(WORD *w) {
   u64 len = spop();
   char *addr = (char *)spop();
   if (len == 0) {
-    printf("[ERROR] INCLUDE expects a name\n");
+    printf("%s[ERROR] INCLUDE expects a name\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
   char *fname = strndup(addr, len);
 
   if (!fname) {
-    printf("[ERROR] INCLUDE expects filename\n");
+    printf("%s[ERROR] INCLUDE expects filename\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
   FILE *f = fopen(fname, "r");
   if (!f) {
-    printf("[ERROR] Could not open %s\n", fname);
+    printf("%s[ERROR] Could not open %s\n%s", SETREDCOLOR, fname,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -909,6 +1071,7 @@ void include_forth_file(WORD *w) {
     main_interpret_line(line);
   }
   fclose(f);
+  printf("%sDONE\n%s", SETGREENCOLOR, RESETALLSTYLES);
 }
 
 void interpret(WORD *ww) {
@@ -932,7 +1095,7 @@ void mode_show(WORD *ww) {
 void mode_get(WORD *ww) {
   UNUSED(ww);
   if (sp >= (u64)STACK_SIZE) {
-    printf("[ERROR] Stack is full");
+    printf("%s[ERROR] Stack is full%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -946,7 +1109,8 @@ void interpret_token_word(WORD *ww) {
   UNUSED(ww);
 
   if (sp < 2) {
-    printf("[ERROR] INTERPRET-TOKEN expects addr len\n");
+    printf("%s[ERROR] INTERPRET-TOKEN expects addr len\n%s", SETREDCOLOR,
+           RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -957,7 +1121,7 @@ void interpret_token_word(WORD *ww) {
   char *token = strndup(addr, len);
 
   if (!token) {
-    printf("[ERROR] Out of memory\n");
+    printf("%s[ERROR] Out of memory\n%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
@@ -987,7 +1151,7 @@ void interpret_token_word(WORD *ww) {
       }
 
     } else {
-      printf("Unknown word: %s\n", token);
+      printf("%sUnknown word: %s\n%s", SETREDCOLOR, token, RESETALLSTYLES);
       print_source_line();
       free(tmp);
       free(token);
@@ -1063,20 +1227,33 @@ void parse_name_word(WORD *w) {
   input_index = i;
   spush((u64)start);
   spush((u64)(src + i - start));
-  // char *addr;
-  // u64 len;
-  //
-  // // jump white space wholy hacky way
-  //
-  // int ok = c_next_token(&addr, &len);
-  // if (!ok) {
-  //   spush(0);
-  //   spush(0);
-  //   return;
-  // }
-  //
-  // spush((u64)addr);
-  // spush(len);
+}
+
+void parse_string_word(WORD *w) {
+  UNUSED(w);
+
+  char *src = current_line_buffer;
+  u64 len_src = current_line_length;
+  u64 i = input_index;
+
+  while (i < len_src && isspace((unsigned char)src[i]))
+    i++;
+
+  if (i >= len_src) {
+    spush(0);
+    spush(0);
+    input_index = i;
+    return;
+  }
+
+  char *start = src + i;
+
+  while (i < len_src && (unsigned char)src[i] != '"')
+    i++;
+
+  input_index = i + 1;
+  spush((u64)start);
+  spush((u64)(src + i - start));
 }
 
 void interpret_line_c_word(WORD *w) {
@@ -1104,7 +1281,7 @@ void init(void) {
   add_word("INTERPRET", interpret, NULL, 0);
   add_word("SOURCE", source_word, NULL, 0);
   add_word(">IN", in_word, NULL, 0);
-  add_word("POSTPONE", postpone, NULL, IMMEDIATE);
+  add_word("TYPE", type, NULL, 0);
 
   add_word(":", colon, NULL, IMMEDIATE);
   add_word(";", semicolon, NULL, IMMEDIATE);
@@ -1158,19 +1335,26 @@ void init(void) {
   add_word("!", write_ptr, NULL, 0);
   add_word(">R", to_r, NULL, 0);
   add_word("R>", from_r, NULL, 0);
-  add_word("c@", c_at, NULL, 0);
-  add_word("c!", c_store, NULL, 0);
+  add_word("b@", b_at, NULL, 0);
+  add_word("b!", b_store, NULL, 0);
   add_word("bl", add_bl, NULL, 0);
   add_word("GROW", grow_data, NULL, IMMEDIATE);
   add_word("HERE", here_data, NULL, 0);
   add_word("ALLOC", alloc_data, NULL, 0);
+  add_word("COPY-CELLS", memcpy_cells, NULL, 0);
+  add_word("COPY-BYTES", memcpy_bytes, NULL, 0);
+  add_word("LITERAL", literal, NULL, 0);
   add_word("constvar:", constant_var_word, NULL, 0);
   add_word("CREATE", create_struct, NULL, 0);
   add_word("PARSE-NAME", parse_name_word, NULL, 0);
+  add_word("PARSE-STRING", parse_string_word, NULL, 0);
+  add_word("HERE-CODE", here_code_word, NULL, 0);
+  add_word("ALLOC-CODE", alloc_code_word, NULL, 0);
   add_word(",", comma, NULL, 0);
   add_word("INTERPRET-TOKEN", interpret_token_word, NULL, 0);
   add_word("IMMEDIATE", immediate, NULL, IMMEDIATE);
 
+  add_word("see", see_word, NULL, 0);
   add_word("bye", bye, NULL, 0);
 
   add_word("INTERPRET-LINE", interpret_line_c_word, NULL, 0);
@@ -1231,12 +1415,6 @@ void main_interpret_line(char *line) {
   current_line_length = strlen(line);
   input_index = 0;
 
-  // WORD *interp = find_word("INTERPRET-LINE");
-  // if (!interp) {
-  //   printf("[FATAL] INTERPRET-LINE not found\n");
-  //   return;
-  // }
-  // execute(interp);
   interpret_line_c_word(NULL);
 }
 
@@ -1244,22 +1422,23 @@ int main(void) {
   init();
   FILE *f = fopen("bootstrap.fs", "r");
   if (!f) {
-    printf("bootstrap.fs not found\n");
+    printf("%sbootstrap.fs not found\n%s", SETREDCOLOR, RESETALLSTYLES);
     exit(EXIT_FAILURE);
   }
   char line[256];
-  printf("Loading bootstrap.fs...\n\n");
+  printf("%sLoading bootstrap.fs...\n%s", SETGREENCOLOR, RESETALLSTYLES);
   while (fgets(line, sizeof(line), f)) {
     main_interpret_line(line);
   }
   fclose(f);
+  printf("%sDONE\n\n%s", SETGREENCOLOR, RESETALLSTYLES);
 
   fflush(stdout);
-  printf("Welcome to skforth :D \n");
-  printf("skforth> ");
+  printf("%sWelcome to skforth :D \n%s", SETGREENCOLOR, RESETALLSTYLES);
+  printf("%sskforth> %s", SETGREENCOLOR, RESETALLSTYLES);
   while (fgets(line, sizeof(line), stdin)) {
     main_interpret_line(line);
-    printf("skforth> ");
+    printf("%sskforth> %s", SETGREENCOLOR, RESETALLSTYLES);
   }
 
   if (data_space)
