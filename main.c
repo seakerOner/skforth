@@ -1,9 +1,18 @@
+#define _GNU_SOURCE
+#include <asm-generic/errno-base.h>
 #include <ctype.h>
+#include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
-#define SOURCEINFO 1
+// TODO: change strndup across codebase
+
+#define SOURCEINFO 0
 
 #if defined(SOURCEINFO) && SOURCEINFO == 1
 #define print_source_line(void)                                                \
@@ -12,19 +21,37 @@
 void print_source_line(void) {}
 #endif
 
-#define STACK_SIZE 1024
-#define MAX_WORDS 5000
-#define MAX_HERE_SPACE 1024 * 64
-#define CF_STACK 256
+typedef unsigned long long u64;
+
+typedef long long i64;
+
+// The original default memory values. If you so desire.
+//
+// BLOCK_SIZE       1024;
+// INITIAL_BLOCKS   64;
+// STACK_SIZE       1024;
+// MAX_WORDS        5000;
+// MAX_HERE_SPACE   1024 * 64;
+// CF_STACK         5000;
+// DATA_SIZE        5000;
+
+u64 BLOCK_SIZE;
+u64 INITIAL_BLOCKS;
+u64 STACK_SIZE;
+u64 MAX_WORDS;
+u64 MAX_CODE_SPACE;
+u64 CF_STACK;
+u64 DATA_SIZE;
+
+#define CONFIG_STACK_SIZE 200
+#define CONFIG_DIC_SIZE 2
+
 #define UNUSED(x) (void)(x)
 
 #define SETREDCOLOR "\033[31m"
 #define SETGREENCOLOR "\033[32m"
+#define SETYELLOWCOLOR "\033[33m"
 #define RESETALLSTYLES "\033[0m"
-
-typedef unsigned long long u64;
-
-typedef long long i64;
 
 typedef enum mode { INTERPRET = 1, COMPILE = 0 } MODE;
 
@@ -44,33 +71,50 @@ typedef struct word {
   u64 *data;
 } WORD;
 
-// main stack
-u64 stack[STACK_SIZE];
+//  main stack
+u64 *stack = NULL;
 u64 sp = 0;
 
 // dictionary stack
-WORD dictionary[MAX_WORDS];
-
+WORD *dictionary = NULL;
 u64 here = 0;
 
 // memory for word definitions
 WORD *current_def = NULL;
 WORD *last_created = NULL;
-u64 code_space[MAX_HERE_SPACE];
-u64 *here_code = code_space;
+u64 *code_space = NULL;
+u64 code_idx = 0;
 
 // return stack
-u64 rstack[STACK_SIZE];
+u64 *rstack = NULL;
 u64 rsp = 0;
 
 // control flow stack (IF/ELSE/THEN BEGIN/WHILE/REPEAT etc..)
-u64 *cfstack[CF_STACK];
+u64 **cfstack = NULL;
 u64 cfsp = 0;
+
+#define CFPUSH(x)                                                              \
+  cfsp >= (u64)CF_STACK ? (printf("%s[ERROR] Control Flow overflow%s\n",       \
+                                  SETREDCOLOR, RESETALLSTYLES),                \
+                           NULL)                                               \
+                        : (cfstack[cfsp++] = (x))
+#define CFPOP()                                                                \
+  (cfsp == (u64)0 ? (printf("%s[ERROR] Control Flow underflow%s\n",            \
+                            SETREDCOLOR, RESETALLSTYLES),                      \
+                     NULL)                                                     \
+                  : cfstack[--cfsp])
+
 // dynamic heap allocated memory
 u64 *data_space = NULL;
 u64 dp = 0;
-u64 data_cap = 0;
 
+// instruction pointer
+u64 *ip = NULL;
+MODE f_mode = INTERPRET;
+
+char *current_line_buffer = NULL;
+u64 current_line_length = 256;
+u64 input_index = 0;
 #define CELLSIZE sizeof(u64)
 
 void execute(WORD *w);
@@ -83,26 +127,12 @@ void allstats(WORD *w) {
          " %s %llu %s\n[RSTACK] %llu %llu %llu %llu\n[CFSTACK] %llu %llu %llu "
          "%llu\n",
          ((u64)STACK_SIZE * CELLSIZE), sp * CELLSIZE, (u64)STACK_SIZE, sp,
-         data_cap * CELLSIZE, dp * CELLSIZE, data_cap, dp,
-         ((u64)MAX_HERE_SPACE * CELLSIZE), "<no info>", (u64)MAX_HERE_SPACE,
+         DATA_SIZE * CELLSIZE, dp * CELLSIZE, DATA_SIZE, dp,
+         ((u64)MAX_CODE_SPACE * CELLSIZE), "<no info>", (u64)MAX_CODE_SPACE,
          "<no info>", ((u64)STACK_SIZE * CELLSIZE), rsp * CELLSIZE,
          (u64)STACK_SIZE, rsp, ((u64)CF_STACK * CELLSIZE), cfsp * CELLSIZE,
          (u64)CF_STACK, (u64)cfsp);
 }
-
-#define CFPUSH(x)                                                              \
-  cfsp >= (u64)CF_STACK ? (printf("%s[ERROR] Control Flow overflow%s\n",       \
-                                  SETREDCOLOR, RESETALLSTYLES),                \
-                           NULL)                                               \
-                        : (cfstack[cfsp++] = (x))
-#define CFPOP()                                                                \
-  (cfsp == (u64)0 ? (printf("%s[ERROR] Control Flow underflow%s\n",            \
-                            SETREDCOLOR, RESETALLSTYLES),                      \
-                     NULL)                                                     \
-                  : cfstack[--cfsp])
-// instruction pointer
-u64 *ip = NULL;
-MODE f_mode = INTERPRET;
 
 int spush(u64 v) {
   if (sp == STACK_SIZE) {
@@ -189,13 +219,9 @@ void literal(WORD *w) {
   u64 val = spop();
   WORD *lit = find_word("LIT");
 
-  *here_code++ = (u64)lit;
-  *here_code++ = val;
+  code_space[code_idx++] = (u64)lit;
+  code_space[code_idx++] = val;
 }
-
-char *current_line_buffer = NULL;
-u64 current_line_length = 256;
-u64 input_index = 0;
 
 void source_word(WORD *w) {
   UNUSED(w);
@@ -263,7 +289,7 @@ void type(WORD *w) {
   UNUSED(w);
   if (f_mode == COMPILE) {
     WORD *word = find_word("TYPE");
-    *here_code++ = (u64)word;
+    code_space[code_idx++] = (u64)word;
     return;
   }
   if (sp < 2) {
@@ -328,7 +354,7 @@ void multiply(WORD *w) {
   u64 a = spop();
   spush(a * b);
 }
-void dup(WORD *w) {
+void dup_word(WORD *w) {
   UNUSED(w);
   if (sp == 0) {
     printf("%s[ERROR] Stack is empty \n%s", SETREDCOLOR, RESETALLSTYLES);
@@ -575,10 +601,10 @@ void clear_data_word(WORD *w) {
     print_source_line();
     return;
   }
-  free(data_space);
+  munmap(data_space, DATA_SIZE * CELLSIZE);
   data_space = NULL;
   dp = 0;
-  data_cap = 0;
+  DATA_SIZE = 0;
 }
 void grow_data(WORD *w) {
   UNUSED(w);
@@ -588,17 +614,23 @@ void grow_data(WORD *w) {
     return;
   }
   u64 n = spop();
-  void *new = realloc(data_space, (data_cap + n) * CELLSIZE);
-  if (!new) {
+  void *new = mremap(data_space, DATA_SIZE * CELLSIZE,
+                     (DATA_SIZE + n) * CELLSIZE, MREMAP_MAYMOVE);
+  if (new == MAP_FAILED) {
     printf("%s[ERROR] Could not regrow Data memory\n%s", SETREDCOLOR,
            RESETALLSTYLES);
+    printf("%s[ERROR] MREMAP failed to regrow to %llu CELLS in "
+           "virtual memory for "
+           "data space (old size: %llu )\n[SYS MSG] %s%s\n",
+           SETREDCOLOR, (u64)DATA_SIZE + n, DATA_SIZE, strerror(errno),
+           RESETALLSTYLES);
+
     print_source_line();
     return;
   }
-  data_cap += n;
+  DATA_SIZE += n;
   data_space = (u64 *)new;
 }
-// int c_next_token(char **out_addr, u64 *out_len);
 int c_next_token(char **addr, u64 *len);
 
 void here_data(WORD *w) {
@@ -608,7 +640,7 @@ void here_data(WORD *w) {
 
 void here_code_word(WORD *w) {
   UNUSED(w);
-  spush((u64)here_code);
+  spush((u64)&code_space[code_idx]);
 }
 
 void alloc_code_word(WORD *w) {
@@ -619,7 +651,7 @@ void alloc_code_word(WORD *w) {
   }
   u64 increment = spop();
 
-  here_code += increment;
+  code_idx += increment;
 }
 
 void or_word(WORD *w) {
@@ -633,7 +665,7 @@ void and_word(WORD *w) {
   UNUSED(w);
   u64 b = spop();
   u64 a = spop();
-  spush(a && b);
+  spush(a & b);
 }
 
 void alloc_data(WORD *w) {
@@ -644,7 +676,7 @@ void alloc_data(WORD *w) {
     return;
   }
   u64 num_cells = spop();
-  if (num_cells + dp > data_cap) {
+  if (num_cells + dp > DATA_SIZE) {
     printf("%s[ERROR] Number of cells to alloc exceed Data Area capacity\n%s",
            SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
@@ -871,20 +903,26 @@ void constant_var_word(WORD *w) {
 }
 
 void ensure_data(u64 cells) {
-  if (dp + cells <= data_cap)
+  if (dp + cells <= DATA_SIZE)
     return;
-  u64 new_cap = data_cap ? data_cap : 16;
+  u64 new_cap = DATA_SIZE ? DATA_SIZE : 16;
   while (new_cap < dp + cells)
     new_cap *= 2;
-  void *new = realloc(data_space, new_cap * CELLSIZE);
-  if (!new) {
-    printf("%s[ERROR] Out of memory in data space\n%s", SETREDCOLOR,
+
+  void *new = mremap(data_space, DATA_SIZE * CELLSIZE, new_cap * CELLSIZE,
+                     MREMAP_MAYMOVE);
+  if (new == MAP_FAILED) {
+    printf("%s[ERROR] MREMAP failed to regrow to %llu CELLS in "
+           "virtual memory for "
+           "data space (old size: %llu )\n[SYS MSG] %s%s\n",
+           SETREDCOLOR, (u64)new_cap, DATA_SIZE, strerror(errno),
            RESETALLSTYLES);
+
     print_source_line();
     return;
   }
   data_space = (u64 *)new;
-  data_cap = new_cap;
+  DATA_SIZE = new_cap;
 }
 
 void bye(WORD *w) {
@@ -921,17 +959,16 @@ void colon(WORD *ww) {
     return;
   }
   WORD *nw = &dictionary[here++];
-  // TODO: change this
   nw->name = name;
   nw->code = NULL;
-  nw->continuation = here_code;
+  nw->continuation = &code_space[code_idx];
   current_def = nw;
   f_mode = COMPILE;
 }
 // ;(end compile mode)
 void semicolon(WORD *w) {
   UNUSED(w);
-  *here_code++ = (u64)NULL;
+  code_space[code_idx++] = (u64)NULL;
   f_mode = INTERPRET;
   current_def = NULL;
 }
@@ -958,9 +995,9 @@ void if_word(WORD *w) {
     return;
   }
   WORD *zb = find_word("0BRANCH");
-  *here_code++ = (u64)zb;
-  *here_code++ = 0;
-  CFPUSH(here_code - 1);
+  code_space[code_idx++] = (u64)zb;
+  code_space[code_idx++] = 0;
+  CFPUSH(&code_space[code_idx - 1]);
 }
 void else_word(WORD *w) {
   UNUSED(w);
@@ -971,11 +1008,11 @@ void else_word(WORD *w) {
     return;
   }
   WORD *br = find_word("BRANCH");
-  *here_code++ = (u64)br;
-  *here_code++ = 0;
+  code_space[code_idx++] = (u64)br;
+  code_space[code_idx++] = 0;
   u64 *if_placeholder = CFPOP();
-  *(u64 *)if_placeholder = (u64)here_code;
-  CFPUSH(here_code - 1);
+  *if_placeholder = (u64)&code_space[code_idx];
+  CFPUSH(&code_space[code_idx - 1]);
 }
 void then_word(WORD *w) {
   UNUSED(w);
@@ -986,7 +1023,7 @@ void then_word(WORD *w) {
     return;
   }
   u64 *placeholder = CFPOP();
-  *(u64 *)placeholder = (u64)here_code;
+  *placeholder = (u64)&code_space[code_idx];
 }
 // begin\while\repeat branching
 void begin(WORD *w) {
@@ -997,7 +1034,7 @@ void begin(WORD *w) {
     print_source_line();
     return;
   }
-  CFPUSH(here_code);
+  CFPUSH(&code_space[code_idx]);
 }
 void while_word(WORD *w) {
   UNUSED(w);
@@ -1008,9 +1045,9 @@ void while_word(WORD *w) {
     return;
   }
   WORD *zb = find_word("0BRANCH");
-  *here_code++ = (u64)zb;
-  *here_code++ = 0;
-  CFPUSH(here_code - 1);
+  code_space[code_idx++] = (u64)zb;
+  code_space[code_idx++] = 0;
+  CFPUSH(&code_space[code_idx - 1]);
 }
 
 void repeat(WORD *w) {
@@ -1024,9 +1061,9 @@ void repeat(WORD *w) {
   u64 *while_placeholder = CFPOP();
   u64 *begin_addr = CFPOP();
   WORD *br = find_word("BRANCH");
-  *here_code++ = (u64)br;
-  *here_code++ = (u64)begin_addr;
-  *(u64 *)while_placeholder = (u64)here_code;
+  code_space[code_idx++] = (u64)br;
+  code_space[code_idx++] = (u64)begin_addr;
+  *(u64 *)while_placeholder = (u64)&code_space[code_idx];
 }
 
 void exit_word(WORD *w) {
@@ -1135,7 +1172,7 @@ void interpret_token_word(WORD *ww) {
       if (w->flags & IMMEDIATE)
         execute(w);
       else
-        *here_code++ = (u64)w;
+        code_space[code_idx++] = (u64)w;
     }
   } else {
     char *end;
@@ -1146,8 +1183,8 @@ void interpret_token_word(WORD *ww) {
         spush(n);
       else {
         WORD *litw = find_word("LIT");
-        *here_code++ = (u64)litw;
-        *here_code++ = n;
+        code_space[code_idx++] = (u64)litw;
+        code_space[code_idx++] = n;
       }
 
     } else {
@@ -1187,7 +1224,6 @@ retrypoint:
         current_line_buffer[input_index] == ')')
       input_index++;
 
-    // return c_next_token(addr, len);
     goto retrypoint;
   }
 
@@ -1296,10 +1332,10 @@ void init(void) {
   add_word("or", or_word, NULL, 0);
   add_word("|", or_word, NULL, 0);
   add_word("and", and_word, NULL, 0);
-  add_word("&&", and_word, NULL, 0);
+  add_word("&", and_word, NULL, 0);
   add_word("*", multiply, NULL, 0);
   add_word("/mod", slash_mod, NULL, 0);
-  add_word("dup", dup, NULL, 0);
+  add_word("dup", dup_word, NULL, 0);
   add_word("2dup", double_dup, NULL, 0);
   add_word("drop", drop, NULL, 0);
   add_word("2drop", double_drop, NULL, 0);
@@ -1358,12 +1394,6 @@ void init(void) {
   add_word("bye", bye, NULL, 0);
 
   add_word("INTERPRET-LINE", interpret_line_c_word, NULL, 0);
-  data_cap = 1024;
-  data_space = malloc(data_cap * CELLSIZE);
-  if (!data_space)
-    printf("[ERROR] Could not dynamically allocate %llu bytes for the Data "
-           "space",
-           data_cap);
 }
 
 void execute(WORD *w) {
@@ -1418,21 +1448,241 @@ void main_interpret_line(char *line) {
   interpret_line_c_word(NULL);
 }
 
+void init_config_file(char *home) {
+  char configpath[256];
+  snprintf(configpath, sizeof(configpath), "%s/.config/skforth", home);
+  switch (mkdir(configpath, 0755)) {
+  case 0: // created
+    printf("%s$HOME/.config/skforth/  directory not found... creating it with "
+           "default values\n%s",
+           SETGREENCOLOR, RESETALLSTYLES);
+    memset(configpath, 0, sizeof(configpath));
+    snprintf(configpath, sizeof(configpath), "%s/.config/skforth/config.fs",
+             home);
+    FILE *config = fopen(configpath, "w+");
+
+    long len = ftell(config);
+    if (len == 0) {
+      fprintf(
+          config,
+          "1024        ( BLOCK_SIZE ) \n"
+          "64          ( INITIAL_BLOCKS ) \n"
+          "32          ( STACK_SIZE ) \n"
+          "5000        ( MAX_WORDS ) \n"
+          "1024 64 *   ( MAX_CODE_SPACE ) \n"
+          "256         ( CF_STACK -- This is for the control flow stack ) \n"
+          "1024        ( DATA_SIZE ) \n");
+    }
+    fclose(config);
+    break;
+  case -1:
+    switch (errno) {
+    case EACCES:
+    case EPERM:
+      printf("%s[ERROR] No permissions no create config file on "
+             "$HOME/.config/skforth/\n%s",
+             SETREDCOLOR, RESETALLSTYLES);
+      exit(EXIT_FAILURE);
+      break;
+    case EIO:
+      printf("%s[ERROR] IO error trying to create config file on "
+             "$HOME/.config/skforth/\n%s",
+             SETREDCOLOR, RESETALLSTYLES);
+      exit(EXIT_FAILURE);
+      break;
+    case ENOSPC:
+      printf("%s[ERROR] No memory available to create config file on "
+             "$HOME/.config/skforth/\n%s",
+             SETREDCOLOR, RESETALLSTYLES);
+      exit(EXIT_FAILURE);
+      break;
+    case EEXIST:
+      memset(configpath, 0, sizeof(configpath));
+      snprintf(configpath, sizeof(configpath), "%s/.config/skforth/config.fs",
+               home);
+      FILE *config = fopen(configpath, "r");
+      if (!config) {
+        printf("banbananana\n");
+        config = fopen(configpath, "w+");
+      }
+
+      FILE *end = config;
+      fseek(end, 0, SEEK_END);
+
+      ftell(config);
+      if (ftell(end) == 0) {
+        fprintf(
+            config,
+            "1024        ( BLOCK_SIZE ) \n"
+            "64          ( INITIAL_BLOCKS ) \n"
+            "32          ( STACK_SIZE ) \n"
+            "5000        ( MAX_WORDS ) \n"
+            "1024 64 *   ( MAX_CODE_SPACE ) \n"
+            "256         ( CF_STACK -- This is for the control flow stack ) \n"
+            "1024        ( DATA_SIZE ) \n");
+      }
+      fclose(config);
+
+      break;
+    }
+    break;
+  default:
+    printf("%s[ERROR] Something happened creating config file on "
+           "$HOME/.config/skforth/\n[SYS MESSAGE] %s ERR number:%d %s",
+           SETREDCOLOR, strerror(errno), errno, RESETALLSTYLES);
+    return;
+    break;
+  }
+}
+
 int main(void) {
+  char line[256];
+
+  // init memory settings from config file
+  {
+
+    // loading/set config file
+    char *home = getenv("HOME");
+    if (home == NULL) {
+      fprintf(stderr, "%sError: HOME environment variable not found.%s\n",
+              SETREDCOLOR, RESETALLSTYLES);
+      exit(EXIT_FAILURE);
+    }
+
+    u64 config_stack[CONFIG_STACK_SIZE];
+    WORD config_dic[CONFIG_DIC_SIZE];
+    stack = config_stack;
+    dictionary = config_dic;
+    MAX_WORDS = CONFIG_DIC_SIZE;
+    STACK_SIZE = CONFIG_STACK_SIZE;
+
+    add_word("INTERPRET-TOKEN", interpret_token_word, NULL, 0);
+    add_word("*", multiply, NULL, 0);
+
+    init_config_file(home);
+
+    snprintf(line, sizeof(line), "%s/.config/skforth/config.fs", home);
+
+    FILE *f_config = fopen(line, "r");
+    if (!f_config) {
+      printf("%s not found\n%s", SETREDCOLOR, RESETALLSTYLES);
+      exit(EXIT_FAILURE);
+    }
+    printf("%sLoading $HOME/.config/skforth/config.fs...\n%s", SETGREENCOLOR,
+           RESETALLSTYLES);
+    while (fgets(line, sizeof(line), f_config)) {
+      main_interpret_line(line);
+    }
+    fclose(f_config);
+    printf("%sDONE\n\n%s", SETGREENCOLOR, RESETALLSTYLES);
+
+    if (sp < 7) {
+      printf(
+          "%s[ERROR] Not enough values for memory settings on "
+          "$HOME/.config/skforth/\n%s[TIP] You can delete the current config "
+          "file and rerun skforth and a fresh config will be created! %s\n",
+          SETREDCOLOR, SETYELLOWCOLOR, RESETALLSTYLES);
+      exit(EXIT_FAILURE);
+    }
+    DATA_SIZE = spop();
+    CF_STACK = spop();
+    MAX_CODE_SPACE = spop();
+    MAX_WORDS = spop();
+    STACK_SIZE = spop();
+    INITIAL_BLOCKS = spop();
+    BLOCK_SIZE = spop();
+  }
+  // set virtual memory with mmap with desired sizes
+  stack = mmap(NULL, STACK_SIZE * CELLSIZE, PROT_READ | PROT_WRITE,
+               MAP_ANONYMOUS | MAP_SHARED, -1, 0);
+
+  if (stack == MAP_FAILED) {
+    printf("%s[ERROR] MMAP failed to reserve %llu CELLS in virtual memory for "
+           "the main stack\n[SYS MSG] %s%s\n",
+           SETREDCOLOR, (u64)STACK_SIZE, strerror(errno), RESETALLSTYLES);
+    exit(EXIT_FAILURE);
+  }
+  sp = 0;
+
+  dictionary = mmap(NULL, MAX_WORDS * sizeof(WORD), PROT_READ | PROT_WRITE,
+                    MAP_ANONYMOUS | MAP_SHARED, -1, 0);
+  if (dictionary == MAP_FAILED) {
+    printf("%s[ERROR] MMAP failed to reserve %llu CELLS (%llu WORDS) in "
+           "virtual memory for "
+           "the dictionary\n[SYS MSG] %s%s\n",
+           SETREDCOLOR, ((u64)MAX_WORDS * sizeof(WORD)), (u64)MAX_WORDS,
+           strerror(errno), RESETALLSTYLES);
+    exit(EXIT_FAILURE);
+  }
+  here = 0;
+
+  current_def = NULL;
+  last_created = NULL;
+
+  code_space =
+      mmap(NULL, MAX_CODE_SPACE * CELLSIZE, PROT_READ | PROT_WRITE | PROT_EXEC,
+           MAP_ANONYMOUS | MAP_SHARED, -1, 0);
+  if (code_space == MAP_FAILED) {
+    printf("%s[ERROR] MMAP failed to reserve %llu CELLS in "
+           "virtual memory for "
+           "the code_space\n[SYS MSG] %s%s\n",
+           SETREDCOLOR, MAX_CODE_SPACE, strerror(errno), RESETALLSTYLES);
+    exit(EXIT_FAILURE);
+  }
+  code_idx = 0;
+
+  rstack = mmap(NULL, STACK_SIZE * CELLSIZE, PROT_READ | PROT_WRITE,
+                MAP_ANONYMOUS | MAP_SHARED, -1, 0);
+  if (rstack == MAP_FAILED) {
+    printf("%s[ERROR] MMAP failed to reserve %llu CELLS in "
+           "virtual memory for "
+           "the return_stack\n[SYS MSG] %s%s\n",
+           SETREDCOLOR, (u64)STACK_SIZE, strerror(errno), RESETALLSTYLES);
+    exit(EXIT_FAILURE);
+  }
+  rsp = 0;
+
+  cfstack = mmap(NULL, CF_STACK * sizeof(u64 *), PROT_READ | PROT_WRITE,
+                 MAP_ANONYMOUS | MAP_SHARED, -1, 0);
+  if (cfstack == MAP_FAILED) {
+    printf("%s[ERROR] MMAP failed to reserve %llu CELLS in "
+           "virtual memory for "
+           "the return_stack\n[SYS MSG] %s%s\n",
+           SETREDCOLOR, (u64)CF_STACK, strerror(errno), RESETALLSTYLES);
+    exit(EXIT_FAILURE);
+  }
+  cfsp = 0;
+
+  data_space = mmap(NULL, DATA_SIZE * CELLSIZE, PROT_READ | PROT_WRITE,
+                    MAP_ANONYMOUS | MAP_SHARED, -1, 0);
+  if (data_space == MAP_FAILED) {
+    printf("%s[ERROR] MMAP failed to reserve %llu CELLS in "
+           "virtual memory for "
+           "data space\n[SYS MSG] %s%s\n",
+           SETREDCOLOR, (u64)DATA_SIZE, strerror(errno), RESETALLSTYLES);
+    exit(EXIT_FAILURE);
+  }
+
+  // setup words
   init();
+
+  memset(line, 0, sizeof(line));
+  // load bootstrap file
   FILE *f = fopen("bootstrap.fs", "r");
   if (!f) {
     printf("%sbootstrap.fs not found\n%s", SETREDCOLOR, RESETALLSTYLES);
     exit(EXIT_FAILURE);
   }
-  char line[256];
   printf("%sLoading bootstrap.fs...\n%s", SETGREENCOLOR, RESETALLSTYLES);
   while (fgets(line, sizeof(line), f)) {
     main_interpret_line(line);
   }
   fclose(f);
-  printf("%sDONE\n\n%s", SETGREENCOLOR, RESETALLSTYLES);
+  printf("%s$HOME/.config/skforth/config.fs DONE\n\n%s", SETGREENCOLOR,
+         RESETALLSTYLES);
 
+  memset(line, 0, sizeof(line));
+  // runtime
   fflush(stdout);
   printf("%sWelcome to skforth :D \n%s", SETGREENCOLOR, RESETALLSTYLES);
   printf("%sskforth> %s", SETGREENCOLOR, RESETALLSTYLES);
@@ -1441,7 +1691,12 @@ int main(void) {
     printf("%sskforth> %s", SETGREENCOLOR, RESETALLSTYLES);
   }
 
-  if (data_space)
-    free(data_space);
+  munmap(stack, STACK_SIZE * CELLSIZE);
+  munmap(dictionary, MAX_WORDS * sizeof(WORD));
+  munmap(code_space, MAX_CODE_SPACE * CELLSIZE);
+  munmap(rstack, STACK_SIZE * CELLSIZE);
+  munmap(cfstack, CF_STACK * sizeof(u64 *));
+  munmap(data_space, DATA_SIZE * CELLSIZE);
+
   return 0;
 }
