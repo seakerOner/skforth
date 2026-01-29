@@ -4,7 +4,7 @@ FLAGS = -Wall -Wextra
 BUILD = ./build/
 
 skforth: 
-	$(CC) $(FLAGS) main.c -g -o $(BUILD)skforth
+	$(CC) $(FLAGS) main.c -o $(BUILD)skforth
 
 run:
 	make

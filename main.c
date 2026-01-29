@@ -2,17 +2,26 @@
 #include <asm-generic/errno-base.h>
 #include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
+
+// blocks sintax
+// BLOCK    ( u -- addr )
+// BUFFER   ( u -- addr )
+// UPDATE   ( -- )
+// FLUSH    ( -- )
+// #BLOCKS  ( -- u)
 
 // TODO: change strndup across codebase
 
-#define SOURCEINFO 0
+#define SOURCEINFO 1
 
 #if defined(SOURCEINFO) && SOURCEINFO == 1
 #define print_source_line(void)                                                \
@@ -36,7 +45,7 @@ typedef long long i64;
 // DATA_SIZE        5000;
 
 u64 BLOCK_SIZE;
-u64 INITIAL_BLOCKS;
+u64 NUM_BLOCKS;
 u64 STACK_SIZE;
 u64 MAX_WORDS;
 u64 MAX_CODE_SPACE;
@@ -107,6 +116,13 @@ u64 cfsp = 0;
 // dynamic heap allocated memory
 u64 *data_space = NULL;
 u64 dp = 0;
+
+// u64 *blocks_base = NULL;
+u_int8_t *blocks_base = NULL;
+
+int tmp_block_editor_fd;
+u64 curr_block_num = -1;
+u64 editor_dirty = 0;
 
 // instruction pointer
 u64 *ip = NULL;
@@ -1309,6 +1325,230 @@ void interpret_line_c_word(WORD *w) {
   }
 }
 
+void system_word(WORD *w) {
+  UNUSED(w);
+  if (f_mode == COMPILE) {
+    WORD *word = find_word("SHELL-CMD");
+    code_space[code_idx++] = (u64)word;
+    return;
+  }
+  if (sp < 2) {
+    printf("%s[ERROR] Stack is too small%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+  u64 len = spop();
+  char *start = (char *)spop();
+  char *command = strndup(start, len);
+  system(command);
+}
+
+void blocks_base_word(WORD *w) {
+  UNUSED(w);
+  if (sp >= STACK_SIZE) {
+    printf("%s[ERROR] Stack is full%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+  spush((u64)blocks_base);
+}
+void block_size_word(WORD *w) {
+  UNUSED(w);
+  if (sp >= STACK_SIZE) {
+    printf("%s[ERROR] Stack is full%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+  spush(BLOCK_SIZE);
+}
+void interpret_block_word(WORD *w) {
+  UNUSED(w);
+  if (sp < 2) {
+    printf("%s[ERROR] Stack is too small%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+  u64 blk_len = spop();
+  char *base = (char *)spop();
+
+  char *p = base;
+  char *end = base + blk_len;
+
+  while (p < end) {
+    char *line_start = p;
+
+    while (p < end && *p != '\n')
+      p++;
+
+    char nl_saved = *p;
+    *p = '\0';
+
+    main_interpret_line(line_start);
+
+    *p = nl_saved;
+
+    if (p < end)
+      p++;
+  }
+}
+void load_external_editor_buffer(WORD *w) {
+  if (sp < 2) {
+    UNUSED(w);
+    printf("%s[ERROR] Stack is too small%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+  u64 blk_len = spop();
+  char *base = (char *)spop();
+
+  // We close and reopen the file to force state re-synchronization.
+  // After an external editor (fork+exec via system()), the file descriptor
+  // state (offsets, cache associations) can become incoherent when mixing
+  // mmap and stdio I/O.
+  // Closing and reopening forces inode and page-cache revalidation.
+  //
+  //  NOTE: This is not a data sync issue (msync/fsync are insufficient here),
+  // but a file-descriptor state issue after external modification.
+  close(tmp_block_editor_fd);
+  char line[256];
+  char *home = getenv("HOME");
+  if (home == NULL) {
+    fprintf(stderr, "%sError: HOME environment variable not found.%s\n",
+            SETREDCOLOR, RESETALLSTYLES);
+    exit(EXIT_FAILURE);
+  }
+  sprintf(line, "%s/.config/skforth/block_editor.fs", home);
+
+  tmp_block_editor_fd = open(line, O_RDWR);
+
+  lseek(tmp_block_editor_fd, 0, SEEK_SET);
+  ftruncate(tmp_block_editor_fd, BLOCK_SIZE);
+  int res = write(tmp_block_editor_fd, base, blk_len * sizeof(char));
+  if (res == -1) {
+    printf("%s[ERROR] Could not load BLOCK to tmp editor buffer%s", SETREDCOLOR,
+           RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+}
+void save_external_editor_buffer(WORD *w) {
+  UNUSED(w);
+  if (sp < 1) {
+    printf("%s[ERROR] Stack is too small%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+  u64 blk_idx = spop();
+
+  // We close and reopen the file to force state re-synchronization.
+  // After an external editor (fork+exec via system()), the file descriptor
+  // state (offsets, cache associations) can become incoherent when mixing
+  // mmap and stdio I/O.
+  // Closing and reopening forces inode and page-cache revalidation.
+  //
+  //  NOTE: This is not a data sync issue (msync/fsync are insufficient here),
+  // but a file-descriptor state issue after external modification.
+  close(tmp_block_editor_fd);
+  char line[256];
+  char *home = getenv("HOME");
+  if (home == NULL) {
+    fprintf(stderr, "%sError: HOME environment variable not found.%s\n",
+            SETREDCOLOR, RESETALLSTYLES);
+    exit(EXIT_FAILURE);
+  }
+  sprintf(line, "%s/.config/skforth/block_editor.fs", home);
+
+  tmp_block_editor_fd = open(line, O_RDWR);
+
+  if (blk_idx >= NUM_BLOCKS) {
+    printf("%s[ERROR] Invalid block index: %llu %s", SETREDCOLOR, blk_idx,
+           RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+
+  unsigned char *blk_addr =
+      ((unsigned char *)blocks_base) + (blk_idx * BLOCK_SIZE);
+
+  lseek(tmp_block_editor_fd, 0, SEEK_SET);
+
+  int r = read(tmp_block_editor_fd, blk_addr, BLOCK_SIZE);
+  if (r == -1) {
+    printf("%s\n", strerror(errno));
+    printf("%s[ERROR] Could not load BLOCK to tmp editor buffer%s", SETREDCOLOR,
+           RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+}
+
+void blk_word(WORD *w) {
+  UNUSED(w);
+  if (sp >= STACK_SIZE) {
+    printf("%s[ERROR] Stack is full%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+
+  spush(curr_block_num);
+}
+void blk_change_word(WORD *w) {
+  UNUSED(w);
+  if (sp < 1) {
+    printf("%s[ERROR] Stack is too small%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+  u64 curr_blk = spop();
+  curr_block_num = curr_blk;
+}
+void num_blocks_word(WORD *w) {
+  UNUSED(w);
+  if (sp >= STACK_SIZE) {
+    printf("%s[ERROR] Stack is full%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+  spush(NUM_BLOCKS);
+}
+void editor_dirty_at_word(WORD *w) {
+  UNUSED(w);
+  if (sp >= STACK_SIZE) {
+    printf("%s[ERROR] Stack is full%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+  spush(editor_dirty);
+}
+void editor_dirty_write_word(WORD *w) {
+  UNUSED(w);
+  if (sp < 1) {
+    printf("%s[ERROR] Stack is too small%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+  u64 val = spop();
+  editor_dirty = val;
+}
+void editor_block_at_word(WORD *w) {
+  UNUSED(w);
+  if (sp >= STACK_SIZE) {
+    printf("%s[ERROR] Stack is full%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+  spush(curr_block_num);
+}
+void editor_block_write_word(WORD *w) {
+  UNUSED(w);
+  if (sp < 1) {
+    printf("%s[ERROR] Stack is too small%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+  u64 val = spop();
+  curr_block_num = val;
+}
 void init(void) {
   add_word("LIT", lit, NULL, 0);
   add_word("0BRANCH", zero_branch, NULL, 0);
@@ -1318,6 +1558,20 @@ void init(void) {
   add_word("SOURCE", source_word, NULL, 0);
   add_word(">IN", in_word, NULL, 0);
   add_word("TYPE", type, NULL, 0);
+
+  add_word("SHELL-CMD", system_word, NULL, 0);
+  add_word("BLOCKS-BASE", blocks_base_word, NULL, 0);
+  add_word("BLOCK-SIZE", block_size_word, NULL, 0);
+  add_word("INTERPRET-BLOCK", interpret_block_word, NULL, 0);
+  add_word("LOAD-EXTRN-EDITBUFF", load_external_editor_buffer, NULL, 0);
+  add_word("SAVE-EXTRN-EDITBUFF", save_external_editor_buffer, NULL, 0);
+  add_word("#BLOCKS", num_blocks_word, NULL, 0);
+  add_word("EDITOR-DIRTY@", editor_dirty_at_word, NULL, 0);
+  add_word("EDITOR-DIRTY!", editor_dirty_write_word, NULL, 0);
+  add_word("EDITOR-BLOCK@", editor_block_at_word, NULL, 0);
+  add_word("EDITOR-BLOCK!", editor_block_write_word, NULL, 0);
+  add_word("BLK", blk_word, NULL, 0);
+  add_word("BLK!", blk_change_word, NULL, 0);
 
   add_word(":", colon, NULL, IMMEDIATE);
   add_word(";", semicolon, NULL, IMMEDIATE);
@@ -1461,12 +1715,31 @@ void init_config_file(char *home) {
              home);
     FILE *config = fopen(configpath, "w+");
 
+    // create BLOCKS file
+    {
+
+      printf("%sCreating BLOCKS.blk ...%s", SETGREENCOLOR, RESETALLSTYLES);
+      char block_path[256];
+      snprintf(block_path, sizeof(block_path), "%s/.config/skforth/BLOCKS.blk",
+               home);
+      FILE *blocks = fopen(block_path, "w+");
+      if (!blocks) {
+        printf("%s[ERROR] Failed to create BLOCKS file at "
+               "$HOME/.config/skforth/\n%s",
+               SETREDCOLOR, RESETALLSTYLES);
+      } else {
+        fclose(blocks);
+      }
+
+      printf("%sDone\n%s", SETGREENCOLOR, RESETALLSTYLES);
+    }
+
     long len = ftell(config);
     if (len == 0) {
       fprintf(
           config,
           "1024        ( BLOCK_SIZE ) \n"
-          "64          ( INITIAL_BLOCKS ) \n"
+          "64          ( NUM_BLOCKS ) \n"
           "32          ( STACK_SIZE ) \n"
           "5000        ( MAX_WORDS ) \n"
           "1024 64 *   ( MAX_CODE_SPACE ) \n"
@@ -1500,10 +1773,20 @@ void init_config_file(char *home) {
       memset(configpath, 0, sizeof(configpath));
       snprintf(configpath, sizeof(configpath), "%s/.config/skforth/config.fs",
                home);
-      FILE *config = fopen(configpath, "r");
+      FILE *config = fopen(configpath, "r+");
       if (!config) {
-        printf("banbananana\n");
         config = fopen(configpath, "w+");
+      }
+      // check if BLOCKS file exits
+      {
+        char block_path[256];
+        snprintf(block_path, sizeof(block_path),
+                 "%s/.config/skforth/BLOCKS.blk", home);
+        FILE *blocks = fopen(block_path, "r+");
+        if (!blocks) {
+          blocks = fopen(block_path, "w+");
+        }
+        fclose(blocks);
       }
 
       FILE *end = config;
@@ -1514,7 +1797,7 @@ void init_config_file(char *home) {
         fprintf(
             config,
             "1024        ( BLOCK_SIZE ) \n"
-            "64          ( INITIAL_BLOCKS ) \n"
+            "64          ( NUM_BLOCKS ) \n"
             "32          ( STACK_SIZE ) \n"
             "5000        ( MAX_WORDS ) \n"
             "1024 64 *   ( MAX_CODE_SPACE ) \n"
@@ -1537,18 +1820,15 @@ void init_config_file(char *home) {
 
 int main(void) {
   char line[256];
+  char *home = getenv("HOME");
+  if (home == NULL) {
+    fprintf(stderr, "%sError: HOME environment variable not found.%s\n",
+            SETREDCOLOR, RESETALLSTYLES);
+    exit(EXIT_FAILURE);
+  }
 
   // init memory settings from config file
   {
-
-    // loading/set config file
-    char *home = getenv("HOME");
-    if (home == NULL) {
-      fprintf(stderr, "%sError: HOME environment variable not found.%s\n",
-              SETREDCOLOR, RESETALLSTYLES);
-      exit(EXIT_FAILURE);
-    }
-
     u64 config_stack[CONFIG_STACK_SIZE];
     WORD config_dic[CONFIG_DIC_SIZE];
     stack = config_stack;
@@ -1565,10 +1845,10 @@ int main(void) {
 
     FILE *f_config = fopen(line, "r");
     if (!f_config) {
-      printf("%s not found\n%s", SETREDCOLOR, RESETALLSTYLES);
+      printf("%s Config not found\n%s", SETREDCOLOR, RESETALLSTYLES);
       exit(EXIT_FAILURE);
     }
-    printf("%sLoading $HOME/.config/skforth/config.fs...\n%s", SETGREENCOLOR,
+    printf("%sLoading $HOME/.config/skforth/config.fs...%s", SETGREENCOLOR,
            RESETALLSTYLES);
     while (fgets(line, sizeof(line), f_config)) {
       main_interpret_line(line);
@@ -1589,10 +1869,11 @@ int main(void) {
     MAX_CODE_SPACE = spop();
     MAX_WORDS = spop();
     STACK_SIZE = spop();
-    INITIAL_BLOCKS = spop();
+    NUM_BLOCKS = spop();
     BLOCK_SIZE = spop();
   }
   // set virtual memory with mmap with desired sizes
+
   stack = mmap(NULL, STACK_SIZE * CELLSIZE, PROT_READ | PROT_WRITE,
                MAP_ANONYMOUS | MAP_SHARED, -1, 0);
 
@@ -1663,6 +1944,50 @@ int main(void) {
     exit(EXIT_FAILURE);
   }
 
+  // BLOCKS
+  printf("%sPreparing BLOCKS.blk...%s\n", SETGREENCOLOR, RESETALLSTYLES);
+  char block_path[256];
+  snprintf(block_path, sizeof(block_path), "%s/.config/skforth/BLOCKS.blk",
+           home);
+  int block_fd = open(block_path, O_RDWR);
+
+  if (block_fd == -1) {
+    printf("%sBLOCKS.blk not found\n%s", SETREDCOLOR, RESETALLSTYLES);
+  } else {
+    if (ftruncate(block_fd, BLOCK_SIZE * NUM_BLOCKS) == -1) {
+      printf("%s[ERROR] Failed to truncate BLOCKS.blk%s\n", SETREDCOLOR,
+             RESETALLSTYLES);
+    } else {
+      blocks_base = mmap(NULL, BLOCK_SIZE * NUM_BLOCKS, PROT_READ | PROT_WRITE,
+                         MAP_SHARED, block_fd, 0);
+
+      if (blocks_base == MAP_FAILED) {
+        printf("%s[ERROR] MMAP failed to reserve %llu BLOCKS in "
+               "virtual memory.\n[SYS MSG] %s%s\n",
+               SETREDCOLOR, (u64)NUM_BLOCKS, strerror(errno), RESETALLSTYLES);
+        goto skipblocks;
+      }
+
+      memset(block_path, 0, sizeof(block_path)); // reuse the buffer
+      printf("%sCreating a temporary block editor file... \n%s", SETGREENCOLOR,
+             RESETALLSTYLES);
+      sprintf(block_path, "%s/.config/skforth/block_editor.fs", home);
+      tmp_block_editor_fd = creat(block_path, S_IRUSR | S_IWUSR);
+      if (tmp_block_editor_fd)
+        close(tmp_block_editor_fd);
+
+      tmp_block_editor_fd = open(block_path, O_RDWR);
+      if (tmp_block_editor_fd == -1) {
+        printf("%s[ERROR] Could not create temporary block editor file%s\n",
+               SETREDCOLOR, RESETALLSTYLES);
+        goto skipblocks;
+      }
+
+      printf("%sDone \n%s", SETGREENCOLOR, RESETALLSTYLES);
+    }
+  }
+skipblocks:
+
   // setup words
   init();
 
@@ -1682,6 +2007,7 @@ int main(void) {
          RESETALLSTYLES);
 
   memset(line, 0, sizeof(line));
+
   // runtime
   fflush(stdout);
   printf("%sWelcome to skforth :D \n%s", SETGREENCOLOR, RESETALLSTYLES);
@@ -1689,6 +2015,12 @@ int main(void) {
   while (fgets(line, sizeof(line), stdin)) {
     main_interpret_line(line);
     printf("%sskforth> %s", SETGREENCOLOR, RESETALLSTYLES);
+  }
+
+  if (block_fd != -1) {
+    close(block_fd);
+    munmap(blocks_base, BLOCK_SIZE * NUM_BLOCKS);
+    close(tmp_block_editor_fd);
   }
 
   munmap(stack, STACK_SIZE * CELLSIZE);

@@ -10,8 +10,7 @@
     dup * 
 ; 
 
-: <> 
-    = 0= 
+: <> = 0= 
 ; 
 
 : / 
@@ -42,6 +41,8 @@
     CELLSIZEBYTES /
 ;
 
+\ word to print a string
+
 : ." PARSE-STRING ( string" -- )
     mode 1 =
     IF
@@ -61,3 +62,69 @@
     THEN
 ; IMMEDIATE
 
+\ word to do shell commands
+
+: SYS" PARSE-STRING ( string" -- )
+    mode 1 = 
+    IF
+        SHELL-CMD
+    ELSE
+        dup >R              
+        dup ceil-cells >R   
+        HERE                
+        R> ALLOC            
+        dup >R             
+        swap                
+        COPY-BYTES         
+        R> LITERAL          
+        R> LITERAL          
+        SHELL-CMD
+    THEN
+; IMMEDIATE
+
+\ words to work with BLOCKS
+
+: BLOCK ( n -- addr ) 
+    BLOCK-SIZE *
+    BLOCKS-BASE +
+;
+
+: LOAD ( n -- )
+    dup BLK!
+    BLOCK
+    BLOCK-SIZE
+    INTERPRET-BLOCK
+    0 BLK!
+;
+
+: NVIM ( n -- )
+    dup BLK!
+    dup EDITOR-BLOCK!
+    BLOCK BLOCK-SIZE LOAD-EXTRN-EDITBUFF
+    SYS" nvim -c 'e!' ~/.config/skforth/block_editor.fs"
+;
+
+: EDIT ( n -- ) \ ALIAS to NVIM until an editor is made
+    NVIM 
+;
+
+: UPDATE ( -- )
+    EDITOR-BLOCK@ -1 = 
+    IF
+        ." no BLOCK in editor" cr
+    ELSE
+        1 EDITOR-DIRTY!
+        ." Editor BLOCK marked as dirty." cr
+    THEN
+;
+
+: FLUSH ( -- )
+    EDITOR-DIRTY@ 
+    IF
+        EDITOR-BLOCK@ SAVE-EXTRN-EDITBUFF
+        0  EDITOR-DIRTY!
+        ." EDITBUFF saved to marked BLOCK." cr 
+    ELSE
+        ." EDITBUFF is not set to dirty."   cr
+    THEN
+;

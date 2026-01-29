@@ -7,6 +7,8 @@ skforth intentionally prioritizes explicit control flow and simplicity over stan
 
 ## It implements a classic stack-based Forth model, including:
 
+- BLOCKS (persistent storage)
+- loading `.fs` files inside the REPL
 - main stack
 - return stack
 - dictionary of words
@@ -14,7 +16,6 @@ skforth intentionally prioritizes explicit control flow and simplicity over stan
 - basic control flow
 - user-defined words
 - basic I/O and debugging helpers
-- loading `.fs` files inside the REPL
 
 ## Features
 
@@ -121,6 +122,141 @@ skforth stats:
 [RSTACK] 8192 0 1024 0
 [CFSTACK] 2048 0 256 0
 ```
+---
+
+## BLOCKS (persistent storage)
+
+skforth includes a **BLOCKS** subsystem inspired by the traditional Forth block model.
+
+Unlike file-based source loading, BLOCKS provide persistent, addressable storage
+that can be executed, edited, and managed explicitly from within the system.
+
+BLOCKS are backed by a memory-mapped file and are designed to integrate naturally
+with skforth’s virtual-memory-based architecture.
+
+### Storage model
+
+Blocks are stored in: 
+
+```text
+$HOME/.config/skforth/BLOCKS.blk
+```
+At startup, this file is:
+
+- resized to **BLOCK_SIZE * INITIAL_BLOCKS**
+- mapped into memory using `mmap(2)` with `MAP_SHARED`
+
+All block addresses returned by the system point **directly into this mapped region**.
+
+There is currently **no block cache** — blocks are accessed directly in memory.
+
+### Configuration
+
+BLOCKS are configured via `config.fs`:
+
+```Forth
+1024    ( BLOCK_SIZE )
+64      ( INITIAL_BLOCKS )
+```
+
+### Mental model
+
+The BLOCKS system is intentionally explicit and separates **editing** from
+**persistence**.
+
+Think in terms of three layers:
+
+1. **Block storage**
+    The memory-mapped BLOCKS.blk file
+
+2. **Editor buffer**
+    A temporary external file used by an editor (currently `nvim`)
+
+3. **Commit control**
+Explicit words that decide when changes are written back to block storage
+
+Editing a block does not automatically imply saving it.
+
+### WORDS for BLOCKS
+
+```Forth
+BLOCK ( u -- addr )
+```
+Returns the address of block `u`.
+
+- The address points directly into the memory-mapped block store
+- Each block is `BLOCK_SIZE` bytes long
+
+---
+```Forth
+LOAD ( u -- )
+```
+Loads and interprets block `u` as Forth source.
+
+This allows blocks to be used as executable, persistent code units.
+
+---
+```Forth
+EDIT ( u -- )
+```
+Edits block `u` using an external editor.
+
+Current behavior:
+
+- the contents of block `u` are copied into a temporary file:
+```text
+$HOME/.config/skforth/block_editor.fs
+```
+- an external editor is launched
+- changes remain in the editor buffer until explicitly committed
+
+Edits are **not saved automatically**.
+
+---
+```Forth
+UPDATE ( -- )
+```
+Marks the currently edited block as modified.
+
+This records intent, but does not write anything to disk.
+
+---
+```Forth
+FLUSH ( -- )
+```
+Writes the editor buffer back into the memory-mapped block store.
+
+After `FLUSH`, changes become persistent in `BLOCKS.blk`.
+
+---
+Editing workflow
+
+To preserve changes made during editing:
+
+```Forth
+1 EDIT  \ you enter in editor mode and change the block
+UPDATE  \ after you exit the editor, UPDATE to mark block as dirty
+FLUSH   \ save contents of EDITOR-BLOCK to dirty BLOCK
+```
+If you edit another block without flushing, previous edits may be lost.
+
+This behavior is intentional and reflects skforth’s preference for
+explicit control over implicit persistence.
+
+---
+**Notes on implementation**
+
+- `BLOCKS.blk` is accessed exclusively through `mmap`
+- external editors operate on a separate temporary file
+- after editor exit, file descriptors are closed and reopened to force
+inode and page-cache revalidation (mixing `mmap` and external writes)
+
+---
+**Current limitations**
+
+- only one external editor buffer exists
+- no `BUFFER` word yet
+- no in-memory block buffering
 
 ---
 
