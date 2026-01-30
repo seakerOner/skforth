@@ -1,42 +1,45 @@
-: nip 
+: nip ( x y -- y )
     swap drop 
 ; 
 
-: tuck 
+: tuck ( x y -- y x y )
     swap over 
 ; 
 
-: sqr 
+: sqr ( n -- n2 )
     dup * 
 ; 
 
-: <> = 0= 
+: <> ( a b -- flag ) 
+    \ true if a != b
+    = 0= 
 ; 
 
-: / 
+: / ( a b -- a/b )
     /mod nip 
 ;
 
-8 constvar: CELLSIZEBYTES 
+8 constvar: CELLSIZEBYTES
 1 constvar: BYTESIZE
 
-: CELL+ 
+: CELL+ ( addr  -- addr' )
     CELLSIZEBYTES + 
 ; 
 
-: CELLS 
+: CELLS ( n -- bytes )
     CELLSIZEBYTES * 
 ; 
 
-: BYTE+ 
+: BYTE+ ( add -- addr' )
     BYTESIZE + 
 ;
 
-: BYTES 
+: BYTES ( bytes -- cells )
     CELLSIZEBYTES / 
 ;
 
 : ceil-cells ( bytes -- cells )
+    \ convert bytes to cells, rounding up
     CELLSIZEBYTES + 1-
     CELLSIZEBYTES /
 ;
@@ -97,9 +100,15 @@
     0 BLK!
 ;
 
+: LIST ( n -- )
+   BLOCK
+   BLOCK-SIZE
+   TYPE
+;
+
 : NVIM ( n -- )
     dup BLK!
-    dup EDITOR-BLOCK!
+    dup EDITOR-BLOCK !
     BLOCK BLOCK-SIZE LOAD-EXTRN-EDITBUFF
     SYS" nvim -c 'e!' ~/.config/skforth/block_editor.fs"
 ;
@@ -109,22 +118,42 @@
 ;
 
 : UPDATE ( -- )
-    EDITOR-BLOCK@ -1 = 
+    EDITOR-BLOCK @ -1 = 
     IF
         ." no BLOCK in editor" cr
     ELSE
-        1 EDITOR-DIRTY!
+        1 EDITOR-DIRTY !
         ." Editor BLOCK marked as dirty." cr
     THEN
 ;
 
 : FLUSH ( -- )
-    EDITOR-DIRTY@ 
+    EDITOR-DIRTY @ 
     IF
-        EDITOR-BLOCK@ SAVE-EXTRN-EDITBUFF
-        0  EDITOR-DIRTY!
+        EDITOR-BLOCK @ SAVE-EXTRN-EDITBUFF
+        0  EDITOR-DIRTY !
         ." EDITBUFF saved to marked BLOCK." cr 
     ELSE
         ." EDITBUFF is not set to dirty."   cr
     THEN
+;
+
+\ to easily access skforth settings. You will need to restart skforth for new settings to take place though
+
+: SETTINGS
+    SYS" nvim ~/.config/skforth/config.fs"
+;
+
+\ Change base number
+
+: DEC ( -- )
+    10 NUMBASE !
+;
+
+: HEX ( -- )
+    16 NUMBASE !
+;
+
+: OCTAL ( -- )
+    8 NUMBASE !
 ;

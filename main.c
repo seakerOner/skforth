@@ -124,6 +124,8 @@ int tmp_block_editor_fd;
 u64 curr_block_num = -1;
 u64 editor_dirty = 0;
 
+u64 num_base = 10;
+
 // instruction pointer
 u64 *ip = NULL;
 MODE f_mode = INTERPRET;
@@ -291,7 +293,19 @@ void dot(WORD *w) {
     return;
   }
   u64 val = spop();
-  printf("%llu ", val);
+  switch (num_base) {
+  case 10:
+    printf("%llu ", val);
+    break;
+  case 16:
+    printf("%llX ", val);
+    break;
+  case 8:
+    printf("%llo ", val);
+    break;
+  default:
+    break;
+  }
 }
 void words(WORD *w) {
   UNUSED(w);
@@ -332,9 +346,43 @@ void dot_stack(WORD *w) {
   UNUSED(w);
   printf("[STACK] <%llu> ", sp);
   for (u64 x = 0; x < sp; x += 1) {
-    printf("%llu ", stack[x]);
+    switch (num_base) {
+    case 10:
+      printf("%llu ", stack[x]);
+      break;
+    case 16:
+      printf("%llX ", stack[x]);
+      break;
+    case 8:
+      printf("%llo ", stack[x]);
+      break;
+    default:
+      break;
+    }
   }
   printf("\n");
+}
+void lshift_word(WORD *w) {
+  UNUSED(w);
+  if (sp < 2) {
+    printf("%s[ERROR] Stack is too small\n%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+  u64 b = spop();
+  u64 a = spop();
+  spush(a << b);
+}
+void rshift_word(WORD *w) {
+  UNUSED(w);
+  if (sp < 2) {
+    printf("%s[ERROR] Stack is too small\n%s", SETREDCOLOR, RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+  u64 b = spop();
+  u64 a = spop();
+  spush(a >> b);
 }
 // primitive: +
 void add(WORD *w) {
@@ -1193,7 +1241,7 @@ void interpret_token_word(WORD *ww) {
   } else {
     char *end;
     char *tmp = strndup(addr, len);
-    u64 n = strtoull(tmp, &end, 10);
+    u64 n = strtoull(tmp, &end, num_base);
     if (*end == '\0') {
       if (f_mode == INTERPRET)
         spush(n);
@@ -1408,7 +1456,7 @@ void load_external_editor_buffer(WORD *w) {
   // Closing and reopening forces inode and page-cache revalidation.
   //
   //  NOTE: This is not a data sync issue (msync/fsync are insufficient here),
-  // but a file-descriptor state issue after external modification.
+  // but a file-descriptor state issue after external modification. I assume
   close(tmp_block_editor_fd);
   char line[256];
   char *home = getenv("HOME");
@@ -1447,7 +1495,7 @@ void save_external_editor_buffer(WORD *w) {
   // Closing and reopening forces inode and page-cache revalidation.
   //
   //  NOTE: This is not a data sync issue (msync/fsync are insufficient here),
-  // but a file-descriptor state issue after external modification.
+  // but a file-descriptor state issue after external modification. I assume
   close(tmp_block_editor_fd);
   char line[256];
   char *home = getenv("HOME");
@@ -1511,44 +1559,35 @@ void num_blocks_word(WORD *w) {
   }
   spush(NUM_BLOCKS);
 }
-void editor_dirty_at_word(WORD *w) {
+void editor_dirty_word(WORD *w) {
   UNUSED(w);
   if (sp >= STACK_SIZE) {
     printf("%s[ERROR] Stack is full%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
-  spush(editor_dirty);
+  spush((u64)&editor_dirty);
 }
-void editor_dirty_write_word(WORD *w) {
-  UNUSED(w);
-  if (sp < 1) {
-    printf("%s[ERROR] Stack is too small%s", SETREDCOLOR, RESETALLSTYLES);
-    print_source_line();
-    return;
-  }
-  u64 val = spop();
-  editor_dirty = val;
-}
-void editor_block_at_word(WORD *w) {
+void editor_block_word(WORD *w) {
   UNUSED(w);
   if (sp >= STACK_SIZE) {
     printf("%s[ERROR] Stack is full%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
-  spush(curr_block_num);
+  spush((u64)&curr_block_num);
 }
-void editor_block_write_word(WORD *w) {
+
+void number_base_ptr_word(WORD *w) {
   UNUSED(w);
-  if (sp < 1) {
-    printf("%s[ERROR] Stack is too small%s", SETREDCOLOR, RESETALLSTYLES);
+  if (sp >= STACK_SIZE) {
+    printf("%s[ERROR] Stack is full%s", SETREDCOLOR, RESETALLSTYLES);
     print_source_line();
     return;
   }
-  u64 val = spop();
-  curr_block_num = val;
+  spush((u64)&num_base);
 }
+
 void init(void) {
   add_word("LIT", lit, NULL, 0);
   add_word("0BRANCH", zero_branch, NULL, 0);
@@ -1558,6 +1597,7 @@ void init(void) {
   add_word("SOURCE", source_word, NULL, 0);
   add_word(">IN", in_word, NULL, 0);
   add_word("TYPE", type, NULL, 0);
+  add_word("NUMBASE", number_base_ptr_word, NULL, 0);
 
   add_word("SHELL-CMD", system_word, NULL, 0);
   add_word("BLOCKS-BASE", blocks_base_word, NULL, 0);
@@ -1566,10 +1606,8 @@ void init(void) {
   add_word("LOAD-EXTRN-EDITBUFF", load_external_editor_buffer, NULL, 0);
   add_word("SAVE-EXTRN-EDITBUFF", save_external_editor_buffer, NULL, 0);
   add_word("#BLOCKS", num_blocks_word, NULL, 0);
-  add_word("EDITOR-DIRTY@", editor_dirty_at_word, NULL, 0);
-  add_word("EDITOR-DIRTY!", editor_dirty_write_word, NULL, 0);
-  add_word("EDITOR-BLOCK@", editor_block_at_word, NULL, 0);
-  add_word("EDITOR-BLOCK!", editor_block_write_word, NULL, 0);
+  add_word("EDITOR-DIRTY", editor_dirty_word, NULL, 0);
+  add_word("EDITOR-BLOCK", editor_block_word, NULL, 0);
   add_word("BLK", blk_word, NULL, 0);
   add_word("BLK!", blk_change_word, NULL, 0);
 
@@ -1610,6 +1648,10 @@ void init(void) {
   add_word("<", lessthan, NULL, 0);
   add_word(">", morethan, NULL, 0);
   add_word(">=", morethanequal, NULL, 0);
+  add_word("lshift", lshift_word, NULL, 0);
+  add_word("rshift", rshift_word, NULL, 0);
+  add_word("<<", lshift_word, NULL, 0);
+  add_word(">>", rshift_word, NULL, 0);
 
   add_word("0>", morethanzero, NULL, 0);
   add_word("0<>", notzero, NULL, 0);
