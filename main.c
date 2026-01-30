@@ -427,16 +427,6 @@ void dup_word(WORD *w) {
   }
   spush(stack[sp - 1]);
 }
-void double_dup(WORD *w) {
-  UNUSED(w);
-  if (sp < 2) {
-    printf("%s[ERROR] Stack is too small \n%s", SETREDCOLOR, RESETALLSTYLES);
-    print_source_line();
-    return;
-  }
-  spush(stack[sp - 2]);
-  spush(stack[sp - 2]);
-}
 void swap(WORD *w) {
   UNUSED(w);
   if (sp < 2) {
@@ -1588,6 +1578,15 @@ void number_base_ptr_word(WORD *w) {
   spush((u64)&num_base);
 }
 
+void fill_word(WORD *w) {
+  UNUSED(w);
+
+  u64 val = spop();
+  u64 size = spop();
+  u64 *addr = (u64 *)spop();
+  memset(addr, val, size);
+}
+
 void init(void) {
   add_word("LIT", lit, NULL, 0);
   add_word("0BRANCH", zero_branch, NULL, 0);
@@ -1628,7 +1627,6 @@ void init(void) {
   add_word("*", multiply, NULL, 0);
   add_word("/mod", slash_mod, NULL, 0);
   add_word("dup", dup_word, NULL, 0);
-  add_word("2dup", double_dup, NULL, 0);
   add_word("drop", drop, NULL, 0);
   add_word("2drop", double_drop, NULL, 0);
   add_word("swap", swap, NULL, 0);
@@ -1675,6 +1673,7 @@ void init(void) {
   add_word("ALLOC", alloc_data, NULL, 0);
   add_word("COPY-CELLS", memcpy_cells, NULL, 0);
   add_word("COPY-BYTES", memcpy_bytes, NULL, 0);
+  add_word("FILL", fill_word, NULL, 0);
   add_word("LITERAL", literal, NULL, 0);
   add_word("constvar:", constant_var_word, NULL, 0);
   add_word("CREATE", create_struct, NULL, 0);

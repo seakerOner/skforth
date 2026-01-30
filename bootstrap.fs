@@ -1,3 +1,7 @@
+: 2dup ( n -- )
+    dup dup
+;
+
 : nip ( x y -- y )
     swap drop 
 ; 
@@ -106,6 +110,18 @@
    TYPE
 ;
 
+: LISTALL ( -- )
+    0 
+    BEGIN
+    dup #BLOCKS 1- <> 
+    WHILE
+       dup ." BLOCK " . ." -------" cr
+       dup >R LIST cr
+       R> 1 +
+    REPEAT
+    drop
+;
+
 : NVIM ( n -- )
     dup BLK!
     dup EDITOR-BLOCK !
@@ -136,6 +152,10 @@
     ELSE
         ." EDITBUFF is not set to dirty."   cr
     THEN
+;
+
+: ERASE ( n -- )
+    BLOCK BLOCK-SIZE 0 FILL
 ;
 
 \ to easily access skforth settings. You will need to restart skforth for new settings to take place though
