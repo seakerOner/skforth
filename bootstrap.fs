@@ -2,6 +2,10 @@
     dup dup
 ;
 
+: 2over ( n -- )
+    over over
+;
+
 : nip ( x y -- y )
     swap drop 
 ; 
@@ -182,14 +186,12 @@
 \ x86-64 implementation is in ./arch/x86_64.fs
 
 : asm: ( -- )
-    mode 1 =
-    IF
-        COMPTIME
-        HEX
-    THEN
+    COMPTIME
+    HEX
 ;
 
 : ;asm ( -- )
    DEC 
+   EXEC-CODE
    INTERPRET
 ;

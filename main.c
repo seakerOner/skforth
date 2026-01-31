@@ -74,8 +74,7 @@ typedef struct word {
   void (*code)(WORD *);
 
   u64 *continuation;
-
-  // list of words
+  // list of words u64 flags;
   u64 flags;
   u64 *data;
 } WORD;
@@ -1587,6 +1586,28 @@ void fill_word(WORD *w) {
   memset(addr, val, size);
 }
 
+void exec_code(WORD *w) {
+  void (*fn)(void) = (void *)spop();
+  fn();
+}
+
+void main_stack_address(WORD *w) {
+  UNUSED(w);
+  spush((u64)stack);
+}
+void main_stack_p_address(WORD *w) {
+  UNUSED(w);
+  spush((u64)&sp);
+}
+void return_stack_address(WORD *w) {
+  UNUSED(w);
+  spush((u64)rstack);
+}
+void return_stack_p_address(WORD *w) {
+  UNUSED(w);
+  spush((u64)&rsp);
+}
+
 void init(void) {
   add_word("LIT", lit, NULL, 0);
   add_word("0BRANCH", zero_branch, NULL, 0);
@@ -1595,7 +1616,11 @@ void init(void) {
   add_word("INTERPRET", interpret, NULL, 0);
   add_word("SOURCE", source_word, NULL, 0);
   add_word(">IN", in_word, NULL, 0);
-  add_word("TYPE", type, NULL, 0);
+  add_word("EXEC-CODE", exec_code, NULL, 0);
+  add_word("_stack", main_stack_address, NULL, 0);
+  add_word("_sp", main_stack_p_address, NULL, 0);
+  add_word("_rstack", return_stack_address, NULL, 0);
+  add_word("_rsp", return_stack_p_address, NULL, 0);
   add_word("NUMBASE", number_base_ptr_word, NULL, 0);
 
   add_word("SHELL-CMD", system_word, NULL, 0);
@@ -1673,6 +1698,7 @@ void init(void) {
   add_word("ALLOC", alloc_data, NULL, 0);
   add_word("COPY-CELLS", memcpy_cells, NULL, 0);
   add_word("COPY-BYTES", memcpy_bytes, NULL, 0);
+  add_word("TYPE", type, NULL, 0);
   add_word("FILL", fill_word, NULL, 0);
   add_word("LITERAL", literal, NULL, 0);
   add_word("constvar:", constant_var_word, NULL, 0);
