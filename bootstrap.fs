@@ -172,26 +172,12 @@
 
 : DEC ( -- )
     10 NUMBASE !
-;
+; IMMEDIATE
 
 : HEX ( -- )
     16 NUMBASE !
-;
+; IMMEDIATE
 
 : OCTAL ( -- )
     8 NUMBASE !
-;
-
-\ to write assembly, you will need to use opcodes 
-\ x86-64 implementation is in ./arch/x86_64.fs
-
-: asm: ( -- )
-    COMPTIME
-    HEX
-;
-
-: ;asm ( -- )
-   DEC 
-   EXEC-CODE
-   INTERPRET
-;
+; IMMEDIATE

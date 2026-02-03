@@ -9,6 +9,7 @@ skforth intentionally prioritizes explicit control flow and simplicity over stan
 
 - BLOCKS (persistent storage)
 - loading `.fs` files inside the REPL
+- CPU Instruction Construction layer (ICL)
 - main stack
 - return stack
 - dictionary of words
@@ -257,6 +258,136 @@ inode and page-cache revalidation (mixing `mmap` and external writes)
 - only one external editor buffer exists
 - no `BUFFER` word yet
 - no in-memory block buffering
+
+---
+## Native CPU instructions (experimental)
+
+skforth allows you to define and execute **raw CPU instructions directly from Forth**.
+
+This is done by encoding instructions as data: each “assembly word” pushes the
+corresponding instruction bytes (prefixes, REX, opcode, ModR/M, SIB, displacement,
+immediates) into code space and executes them.
+
+This is not a traditional assembler.
+
+- there is no text-based syntax
+- no labels
+- no instruction parsing
+- no automatic instruction selection
+
+Instead, skforth gives you **explicit, byte-level control** over instruction
+encoding.
+
+If you know exactly what instruction you want, **you do not need an assembler
+to decide for you**.
+
+Think of this as a Forth-level instruction builder:
+
+- Forth words represent instruction components (REX, ModR/M, registers, opcodes)
+- instruction bytes are emitted explicitly
+- Forth logic can be freely mixed with instruction generation
+
+This makes it possible to build small pieces of machine code while still using
+Forth for control flow, data manipulation, and abstraction.
+
+### Instruction Construction Layer (ICL)
+
+The native CPU instruction support in skforth is implemented as an
+**Instruction Construction Layer (ICL)**.
+
+This is **not** an assembler, an IR, or a traditional JIT.
+
+Instead, it is a small domain-specific language embedded in Forth that
+allows **explicit construction and direct execution of native machine
+instructions**.
+
+Instructions are built as data:
+- each instruction component (REX, opcode, ModR/M, immediate, etc.) is
+  represented by a Forth word
+- instruction bytes are packed explicitly, byte by byte
+- no parsing, labels, relocation, or instruction selection is performed
+
+If you know exactly what instruction you want to emit, skforth does not
+“decide” anything for you — it simply executes what you construct.
+
+### Assembly mode
+
+Assembly words are typically used inside an asm: / ;asm block:
+
+```Forth
+asm:
+    ... instruction words ...
+;asm
+```
+
+`asm:` switches to compile mode and sets numeric base to HEX
+
+`;asm` restores DEC base, emits the generated code, and returns to interpret mode
+
+#### x86-64 support
+
+An experimental x86-64 implementation lives in:
+
+```text
+arch/x86_64.fs
+```
+
+It provides:
+
+- register definitions (`%rax … %r15`)
+- REX prefix helpers
+- ModR/M helpers
+- opcode words
+- higher-level instruction words
+
+
+#### Instruction structure
+
+Instructions are built according to the x86-64 encoding model:
+
+```text
+[prefix] [REX] [opcode] [ModRM] [optional SIB] [displacement] [immediate]
+```
+
+Extended registers (`%r8`–%r15) are masked so that:
+- only the lower 3 bits are used for ModR/M encoding
+- the high bit is used to select the correct REX prefix
+
+This reduces code branching and keeps instruction builders simple.
+
+#### Address and immediate handling
+
+64-bit immediates and addresses are emitted byte-by-byte explicitly.
+
+For example, helper words such as `|addr` simply split a 64-bit value into
+individual bytes and emit them in the correct order.
+
+There is no relocation or symbol resolution; addresses must be known at
+generation time.
+
+#### Status and limitations
+
+This subsystem is **still under development**.
+
+- not all instructions are implemented
+- some instructions may be incomplete or untested
+- there is no support for labels or jumps yet
+- instruction correctness is the responsibility of the user
+
+The design is intentionally minimal and transparent.
+
+#### Portability
+
+The ideas used here are **not x86-64 specific**.
+
+The same approach can be applied to other processors by defining:
+
+- register words
+- instruction encoding helpers
+- opcode emitters
+
+In other words, you can do exactly the same thing for **your own architecture**,
+using Forth as a thin, explicit layer over raw machine code.
 
 ---
 
@@ -515,7 +646,7 @@ mybuf buf-data .
 
 You can also do raw memory on the data space with `HERE` and `ALLOC`
 - `HERE` gives the address of available memory on data space
-- `ALLOC` takes N as argument to incremente the data space pointer (takes number of cells)
+- `ALLOC` takes N as argument to increments the data space pointer (takes number of cells)
 
 # Goals
 

@@ -19,9 +19,7 @@
 // FLUSH    ( -- )
 // #BLOCKS  ( -- u)
 
-// TODO: change strndup across codebase
-
-#define SOURCEINFO 1
+#define SOURCEINFO 0
 
 #if defined(SOURCEINFO) && SOURCEINFO == 1
 #define print_source_line(void)                                                \
@@ -34,16 +32,6 @@ typedef unsigned long long u64;
 
 typedef long long i64;
 
-// The original default memory values. If you so desire.
-//
-// BLOCK_SIZE       1024;
-// INITIAL_BLOCKS   64;
-// STACK_SIZE       1024;
-// MAX_WORDS        5000;
-// MAX_HERE_SPACE   1024 * 64;
-// CF_STACK         5000;
-// DATA_SIZE        5000;
-
 u64 BLOCK_SIZE;
 u64 NUM_BLOCKS;
 u64 STACK_SIZE;
@@ -51,6 +39,7 @@ u64 MAX_WORDS;
 u64 MAX_CODE_SPACE;
 u64 CF_STACK;
 u64 DATA_SIZE;
+u64 MAX_BYTES_SPACE;
 
 #define CONFIG_STACK_SIZE 200
 #define CONFIG_DIC_SIZE 2
@@ -101,6 +90,9 @@ u64 rsp = 0;
 u64 **cfstack = NULL;
 u64 cfsp = 0;
 
+char *bytes_space;
+u64 bytes_p;
+
 #define CFPUSH(x)                                                              \
   cfsp >= (u64)CF_STACK ? (printf("%s[ERROR] Control Flow overflow%s\n",       \
                                   SETREDCOLOR, RESETALLSTYLES),                \
@@ -142,13 +134,13 @@ void allstats(WORD *w) {
          "CURRENT_CELLS\n"
          "[STACK] %llu %llu %llu %llu\n[DATA] %llu %llu %llu %llu\n[CODE] %llu "
          " %s %llu %s\n[RSTACK] %llu %llu %llu %llu\n[CFSTACK] %llu %llu %llu "
-         "%llu\n",
+         "%llu\n[BYTESSPACE] %llu %llu \n",
          ((u64)STACK_SIZE * CELLSIZE), sp * CELLSIZE, (u64)STACK_SIZE, sp,
          DATA_SIZE * CELLSIZE, dp * CELLSIZE, DATA_SIZE, dp,
          ((u64)MAX_CODE_SPACE * CELLSIZE), "<no info>", (u64)MAX_CODE_SPACE,
          "<no info>", ((u64)STACK_SIZE * CELLSIZE), rsp * CELLSIZE,
          (u64)STACK_SIZE, rsp, ((u64)CF_STACK * CELLSIZE), cfsp * CELLSIZE,
-         (u64)CF_STACK, (u64)cfsp);
+         (u64)CF_STACK, (u64)cfsp, MAX_BYTES_SPACE, bytes_p);
 }
 
 int spush(u64 v) {
@@ -211,7 +203,7 @@ void memcpy_bytes(WORD *w) {
            RESETALLSTYLES);
   }
 }
-WORD *find_word(const char *name);
+WORD *find_word(const char *name, u64 len);
 
 void lit(WORD *w) {
   UNUSED(w);
@@ -234,7 +226,7 @@ void literal(WORD *w) {
   }
 
   u64 val = spop();
-  WORD *lit = find_word("LIT");
+  WORD *lit = find_word("LIT", 3);
 
   code_space[code_idx++] = (u64)lit;
   code_space[code_idx++] = val;
@@ -266,21 +258,19 @@ void add_word(const char *name, void (*code)(WORD *),
   w->flags = flags;
 }
 
-int streq(const char *a, const char *b) {
-  while (*a && *b) {
-    if (*a != *b)
+int streq_len(const char *a, const char *b, u64 len) {
+  for (u64 x = 0; x < len; x += 1)
+    if (a[x] != b[x])
       return 0;
-    a++;
-    b++;
-  }
-  return *a == *b;
+  return b[len] == '\0';
 }
 
-WORD *find_word(const char *name) {
+WORD *find_word(const char *name, u64 len) {
   for (i64 x = here - 1; x >= 0; x -= 1) {
-    if (streq(dictionary[x].name, name))
+    if (streq_len(name, dictionary[x].name, len))
       return &dictionary[x];
   }
+
   return NULL;
 }
 
@@ -317,7 +307,7 @@ void words(WORD *w) {
 void type(WORD *w) {
   UNUSED(w);
   if (f_mode == COMPILE) {
-    WORD *word = find_word("TYPE");
+    WORD *word = find_word("TYPE", 4);
     code_space[code_idx++] = (u64)word;
     return;
   }
@@ -601,7 +591,7 @@ void notzero(WORD *w) {
     return;
   }
   u64 val = spop();
-  spush(val > 0);
+  spush(val != 0);
 }
 void minusone(WORD *w) {
   UNUSED(w);
@@ -795,6 +785,18 @@ void from_r(WORD *w) {
   }
   spush(rstack[--rsp]);
 }
+
+void ensure_chars(u64 chars);
+
+char *save_string(const char *src, u64 len) {
+  ensure_chars(len);
+  char *dst = bytes_space + bytes_p;
+  memcpy(dst, src, len);
+  dst[len] = '\0';
+  bytes_p += len + 1;
+  return dst;
+}
+
 void ensure_data(u64 cells);
 
 void push_ptr_code(WORD *w) { spush((u64)w->data); }
@@ -822,7 +824,7 @@ void create_struct(WORD *ww) {
     return;
   }
 
-  char *name = strndup(addr, len);
+  char *name = save_string(addr, len);
 
   if (!name) {
     printf("%s[ERROR] CREATE: strdup failed \n%s", SETREDCOLOR, RESETALLSTYLES);
@@ -866,7 +868,7 @@ void comma(WORD *w) {
 void see_word(WORD *w) {
   UNUSED(w);
 
-  execute(find_word("PARSE-NAME"));
+  execute(find_word("PARSE-NAME", 10));
   u64 len = spop();
   char *addr = (char *)spop();
 
@@ -876,18 +878,11 @@ void see_word(WORD *w) {
     return;
   }
 
-  char *name = strndup(addr, len);
-  if (!name) {
-    printf("%s[ERROR] see expects a name\n%s", SETREDCOLOR, RESETALLSTYLES);
-    print_source_line();
-    return;
-  }
-
-  WORD *w_tosee = find_word(name);
+  WORD *w_tosee = find_word(addr, len);
 
   if (!w_tosee) {
-    printf("%s[ERROR] Unknown word to see: %s%s", SETREDCOLOR, RESETALLSTYLES,
-           name);
+    printf("%s[ERROR] Unknown word to see: %.*s%s", SETREDCOLOR, (int)len, addr,
+           RESETALLSTYLES);
     return;
   }
 
@@ -905,7 +900,7 @@ void see_word(WORD *w) {
   while (*p) {
     WORD *cw = (WORD *)*p++;
 
-    if (cw == find_word("LIT")) {
+    if (cw == find_word("LIT", 3)) {
       u64 val = *p++;
       printf("  LIT %llu\n", val);
     } else {
@@ -918,7 +913,7 @@ void see_word(WORD *w) {
 
 void constant_var_word(WORD *w) {
   UNUSED(w);
-  execute(find_word("PARSE-NAME"));
+  execute(find_word("PARSE-NAME", 10));
   u64 len = spop();
   char *addr = (char *)spop();
   if (len == 0) {
@@ -928,7 +923,7 @@ void constant_var_word(WORD *w) {
     return;
   }
 
-  char *name = strndup(addr, len);
+  char *name = save_string(addr, len);
 
   if (!name) {
     printf("%s[ERROR] constant expects a name\n%s", SETREDCOLOR,
@@ -978,6 +973,27 @@ void ensure_data(u64 cells) {
   DATA_SIZE = new_cap;
 }
 
+void ensure_chars(u64 chars) {
+  if (bytes_p + chars <= MAX_BYTES_SPACE)
+    return;
+  u64 new_cap = MAX_BYTES_SPACE ? MAX_BYTES_SPACE : 256;
+  while (new_cap < bytes_p + chars)
+    new_cap *= 2;
+
+  void *new = mremap(bytes_space, MAX_BYTES_SPACE, new_cap, MREMAP_MAYMOVE);
+  if (new == MAP_FAILED) {
+    printf("%s[ERROR] MREMAP failed to regrow to %llu bytes in "
+           "virtual memory for "
+           "char space (old size: %llu )\n[SYS MSG] %s%s\n",
+           SETREDCOLOR, (u64)new_cap, MAX_BYTES_SPACE, strerror(errno),
+           RESETALLSTYLES);
+    print_source_line();
+    return;
+  }
+  bytes_space = (char *)new;
+  MAX_BYTES_SPACE = new_cap;
+}
+
 void bye(WORD *w) {
   UNUSED(w);
   exit(EXIT_SUCCESS);
@@ -993,7 +1009,7 @@ void colon(WORD *ww) {
     exit(EXIT_FAILURE);
   }
 
-  execute(find_word("PARSE-NAME"));
+  execute(find_word("PARSE-NAME", 10));
   u64 len = spop();
   char *addr = (char *)spop();
   if (len == 0) {
@@ -1003,7 +1019,7 @@ void colon(WORD *ww) {
     return;
   }
 
-  char *name = strndup(addr, len);
+  char *name = save_string(addr, len);
 
   if (!name) {
     printf("%s[ERROR] Expected word name after ':'\n%s", SETREDCOLOR,
@@ -1047,7 +1063,7 @@ void if_word(WORD *w) {
     print_source_line();
     return;
   }
-  WORD *zb = find_word("0BRANCH");
+  WORD *zb = find_word("0BRANCH", 7);
   code_space[code_idx++] = (u64)zb;
   code_space[code_idx++] = 0;
   CFPUSH(&code_space[code_idx - 1]);
@@ -1060,7 +1076,7 @@ void else_word(WORD *w) {
     print_source_line();
     return;
   }
-  WORD *br = find_word("BRANCH");
+  WORD *br = find_word("BRANCH", 6);
   code_space[code_idx++] = (u64)br;
   code_space[code_idx++] = 0;
   u64 *if_placeholder = CFPOP();
@@ -1097,7 +1113,7 @@ void while_word(WORD *w) {
     print_source_line();
     return;
   }
-  WORD *zb = find_word("0BRANCH");
+  WORD *zb = find_word("0BRANCH", 7);
   code_space[code_idx++] = (u64)zb;
   code_space[code_idx++] = 0;
   CFPUSH(&code_space[code_idx - 1]);
@@ -1113,7 +1129,7 @@ void repeat(WORD *w) {
   }
   u64 *while_placeholder = CFPOP();
   u64 *begin_addr = CFPOP();
-  WORD *br = find_word("BRANCH");
+  WORD *br = find_word("BRANCH", 6);
   code_space[code_idx++] = (u64)br;
   code_space[code_idx++] = (u64)begin_addr;
   *(u64 *)while_placeholder = (u64)&code_space[code_idx];
@@ -1133,7 +1149,7 @@ void main_interpret_line(char *line);
 void include_forth_file(WORD *w) {
   UNUSED(w);
 
-  execute(find_word("PARSE-NAME"));
+  execute(find_word("PARSE-NAME", 10));
   u64 len = spop();
   char *addr = (char *)spop();
   if (len == 0) {
@@ -1141,7 +1157,7 @@ void include_forth_file(WORD *w) {
     print_source_line();
     return;
   }
-  char *fname = strndup(addr, len);
+  char *fname = save_string(addr, len);
 
   if (!fname) {
     printf("%s[ERROR] INCLUDE expects filename\n%s", SETREDCOLOR,
@@ -1208,15 +1224,7 @@ void interpret_token_word(WORD *ww) {
   u64 len = spop();
   char *addr = (char *)spop();
 
-  char *token = strndup(addr, len);
-
-  if (!token) {
-    printf("%s[ERROR] Out of memory\n%s", SETREDCOLOR, RESETALLSTYLES);
-    print_source_line();
-    return;
-  }
-
-  WORD *w = find_word(token);
+  WORD *w = find_word(addr, len);
 
   if (w) {
     if (f_mode == INTERPRET) {
@@ -1228,29 +1236,34 @@ void interpret_token_word(WORD *ww) {
         code_space[code_idx++] = (u64)w;
     }
   } else {
+    char tmp[64];
     char *end;
-    char *tmp = strndup(addr, len);
+
+    if (sizeof(tmp) < len) {
+      printf("%sToken to long: %.*s\n%s", SETREDCOLOR, (int)len, addr,
+             RESETALLSTYLES);
+      exit(EXIT_FAILURE);
+    }
+
+    memcpy(tmp, addr, len);
+    tmp[len] = '\0';
     u64 n = strtoull(tmp, &end, num_base);
     if (*end == '\0') {
       if (f_mode == INTERPRET)
         spush(n);
       else {
-        WORD *litw = find_word("LIT");
+        WORD *litw = find_word("LIT", 3);
         code_space[code_idx++] = (u64)litw;
         code_space[code_idx++] = n;
       }
 
     } else {
-      printf("%sUnknown word: %s\n%s", SETREDCOLOR, token, RESETALLSTYLES);
+      printf("%sUnknown word: %.*s\n%s", SETREDCOLOR, (int)len, addr,
+             RESETALLSTYLES);
       print_source_line();
-      free(tmp);
-      free(token);
       return;
     }
-    free(tmp);
   }
-
-  free(token);
 }
 
 int c_next_token(char **addr, u64 *len) {
@@ -1365,7 +1378,7 @@ void interpret_line_c_word(WORD *w) {
 void system_word(WORD *w) {
   UNUSED(w);
   if (f_mode == COMPILE) {
-    WORD *word = find_word("SHELL-CMD");
+    WORD *word = find_word("SHELL-CMD", 9);
     code_space[code_idx++] = (u64)word;
     return;
   }
@@ -1376,7 +1389,7 @@ void system_word(WORD *w) {
   }
   u64 len = spop();
   char *start = (char *)spop();
-  char *command = strndup(start, len);
+  char *command = save_string(start, len);
   system(command);
 }
 
@@ -1587,8 +1600,25 @@ void fill_word(WORD *w) {
 }
 
 void exec_code(WORD *w) {
-  void (*fn)(void) = (void *)spop();
+  u64 payload = spop();
+  u64 instr = spop();
+
+  char len = instr >> 56;
+  u64 bytes = instr & 0x00FFFFFFFFFFFFFF;
+
+  char *buf = &bytes_space[bytes_p];
+
+  memcpy(buf, &bytes, len);
+  u64 start = bytes_p;
+  bytes_p += len;
+
+  memcpy(&bytes_space[bytes_p], &payload, CELLSIZE);
+  bytes_p += CELLSIZE;
+
+  void (*fn)(void) = (void *)buf;
   fn();
+
+  bytes_p = start;
 }
 
 void main_stack_address(WORD *w) {
@@ -1811,7 +1841,8 @@ void init_config_file(char *home) {
           "5000        ( MAX_WORDS ) \n"
           "1024 64 *   ( MAX_CODE_SPACE ) \n"
           "256         ( CF_STACK -- This is for the control flow stack ) \n"
-          "1024        ( DATA_SIZE ) \n");
+          "1024        ( DATA_SIZE ) \n"
+          "1024 64 *   ( MAX_BYTES_SPACE )");
     }
     fclose(config);
     break;
@@ -1869,7 +1900,8 @@ void init_config_file(char *home) {
             "5000        ( MAX_WORDS ) \n"
             "1024 64 *   ( MAX_CODE_SPACE ) \n"
             "256         ( CF_STACK -- This is for the control flow stack ) \n"
-            "1024        ( DATA_SIZE ) \n");
+            "1024        ( DATA_SIZE ) \n"
+            "1024 64 *   ( MAX_BYTES_SPACE )");
       }
       fclose(config);
 
@@ -1931,6 +1963,7 @@ int main(void) {
           SETREDCOLOR, SETYELLOWCOLOR, RESETALLSTYLES);
       exit(EXIT_FAILURE);
     }
+    MAX_BYTES_SPACE = spop();
     DATA_SIZE = spop();
     CF_STACK = spop();
     MAX_CODE_SPACE = spop();
@@ -1951,6 +1984,19 @@ int main(void) {
     exit(EXIT_FAILURE);
   }
   sp = 0;
+
+  bytes_space = mmap(NULL, MAX_BYTES_SPACE * sizeof(char),
+                     PROT_READ | PROT_WRITE | PROT_EXEC,
+                     MAP_ANONYMOUS | MAP_SHARED, -1, 0);
+  if (bytes_space == MAP_FAILED) {
+    printf("%s[ERROR] MMAP failed to reserve %llu BYTES in "
+           "virtual memory for "
+           "the bytes space\n[SYS MSG] %s%s\n",
+           SETREDCOLOR, ((u64)MAX_WORDS * sizeof(WORD)), strerror(errno),
+           RESETALLSTYLES);
+    exit(EXIT_FAILURE);
+  }
+  bytes_p = 0;
 
   dictionary = mmap(NULL, MAX_WORDS * sizeof(WORD), PROT_READ | PROT_WRITE,
                     MAP_ANONYMOUS | MAP_SHARED, -1, 0);
@@ -2090,6 +2136,7 @@ skipblocks:
     close(tmp_block_editor_fd);
   }
 
+  munmap(bytes_space, MAX_BYTES_SPACE);
   munmap(stack, STACK_SIZE * CELLSIZE);
   munmap(dictionary, MAX_WORDS * sizeof(WORD));
   munmap(code_space, MAX_CODE_SPACE * CELLSIZE);
