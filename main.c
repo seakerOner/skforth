@@ -134,7 +134,7 @@ void allstats(WORD *w) {
          "CURRENT_CELLS\n"
          "[STACK] %llu %llu %llu %llu\n[DATA] %llu %llu %llu %llu\n[CODE] %llu "
          " %s %llu %s\n[RSTACK] %llu %llu %llu %llu\n[CFSTACK] %llu %llu %llu "
-         "%llu\n[BYTESSPACE] %llu %llu \n",
+         "%llu\n[BLOBSPACE] %llu %llu \n",
          ((u64)STACK_SIZE * CELLSIZE), sp * CELLSIZE, (u64)STACK_SIZE, sp,
          DATA_SIZE * CELLSIZE, dp * CELLSIZE, DATA_SIZE, dp,
          ((u64)MAX_CODE_SPACE * CELLSIZE), "<no info>", (u64)MAX_CODE_SPACE,
@@ -798,6 +798,16 @@ char *save_string(const char *src, u64 len) {
 }
 
 void ensure_data(u64 cells);
+
+// TODO: add this so word s" can save the string
+void bytes_space_word(WORD *w) {
+  UNUSED(w);
+  spush((u64)&bytes_space[bytes_p]);
+}
+void bytes_p_word(WORD *w) {
+  UNUSED(w);
+  spush((u64)&bytes_p);
+}
 
 void push_ptr_code(WORD *w) { spush((u64)w->data); }
 void push_val_code(WORD *w) { spush(*(w->data)); }
@@ -1600,6 +1610,7 @@ void fill_word(WORD *w) {
 }
 
 void exec_code(WORD *w) {
+  UNUSED(w);
   u64 payload = spop();
   u64 instr = spop();
 
@@ -1725,6 +1736,8 @@ void init(void) {
   add_word("bl", add_bl, NULL, 0);
   add_word("GROW", grow_data, NULL, IMMEDIATE);
   add_word("HERE", here_data, NULL, 0);
+  add_word("BLOB-HERE", bytes_space_word, NULL, 0);
+  add_word("BLOB-LEN", bytes_p_word, NULL, 0);
   add_word("ALLOC", alloc_data, NULL, 0);
   add_word("COPY-CELLS", memcpy_cells, NULL, 0);
   add_word("COPY-BYTES", memcpy_bytes, NULL, 0);
@@ -1842,7 +1855,8 @@ void init_config_file(char *home) {
           "1024 64 *   ( MAX_CODE_SPACE ) \n"
           "256         ( CF_STACK -- This is for the control flow stack ) \n"
           "1024        ( DATA_SIZE ) \n"
-          "1024 64 *   ( MAX_BYTES_SPACE )");
+          "1024 64 *   ( MAX_BLOB_SPACE -- Used for string allocation and "
+          "ICL's instructions)");
     }
     fclose(config);
     break;
@@ -1901,7 +1915,8 @@ void init_config_file(char *home) {
             "1024 64 *   ( MAX_CODE_SPACE ) \n"
             "256         ( CF_STACK -- This is for the control flow stack ) \n"
             "1024        ( DATA_SIZE ) \n"
-            "1024 64 *   ( MAX_BYTES_SPACE )");
+            "1024 64 *   ( MAX_BLOB_SPACE -- Used for string allocation and "
+            "ICL's instructions)");
       }
       fclose(config);
 

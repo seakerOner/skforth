@@ -80,7 +80,7 @@
 ;
 
 : _base-len+1 ( base -- base' )
-    dup _base-len@ 1+
+    dup _base-len@ 1 +
     >R
     HEX 00FFFFFFFFFFFFFF and 
     R> DEC 56 lshift | HEX
@@ -91,8 +91,8 @@
 ;
 
 : _base-pack-byte ( base byte -- base ' )
-    over base-len@ 8 * lshift \ byte << (len * 8)
-    >R dup base-bytes@ R> |
+    over _base-len@ 8 * lshift \ byte << (len * 8)
+    >R dup _base-bytes@ R> |
 ;
 
 : |instr ( base payload byte -- base' payload )

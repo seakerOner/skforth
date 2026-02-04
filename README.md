@@ -73,13 +73,14 @@ The configuration file is **executed by a minimal Forth interpreter** and is exp
 #### Default `config.fs`
 
 ```Forth
-1024        ( BLOCK_SIZE )
-64          ( INITIAL_BLOCKS )
-32          ( STACK_SIZE )
-5000        ( MAX_WORDS )
-1024 64 *   ( MAX_CODE_SPACE )
-256         ( CF_STACK -- control-flow stack )
-1024        ( DATA_SIZE )
+1024        ( BLOCK_SIZE ) 
+64          ( NUM_BLOCKS ) 
+32          ( STACK_SIZE ) 
+5000        ( MAX_WORDS ) 
+1024 64 *   ( MAX_CODE_SPACE ) 
+256         ( CF_STACK -- This is for the control flow stack ) 
+1024        ( DATA_SIZE ) 
+1024 64 *   ( MAX_BLOB_SPACE -- Used for string allocation and ICL's instructions )
 ```
 
 After execution, skforth pops the values from the stack and uses them to initialize the runtime.
@@ -196,6 +197,8 @@ Loads and interprets block `u` as Forth source.
 
 This allows blocks to be used as executable, persistent code units.
 
+TIP: You can use this inside a block to call other blocks ;D
+
 ---
 ```Forth
 EDIT ( u -- )
@@ -230,6 +233,26 @@ Writes the editor buffer back into the memory-mapped block store.
 After `FLUSH`, changes become persistent in `BLOCKS.blk`.
 
 ---
+```Forth
+LIST ( n -- )
+```
+Prints the contents of BLOCK n
+
+---
+```Forth
+LISTALL ( -- )
+```
+
+Prints the contents of all blocks
+
+---
+```Forth
+ERASE ( n -- )
+```
+Erase the contents of Block n (Fills with 0's)
+
+---
+
 Editing workflow
 
 To preserve changes made during editing:
@@ -479,6 +502,7 @@ The interpreter provides a raw data space you can control manually.
 | GROW	 | n --	        | increase data space capacity by n cells |
 | clear.d|	--	        | free and reset data space |
 | constvar: | n "name" -- | reserve a cell and assign it as a word. example : `420 constvar: myvar`| 
+| s"     | string" -- addr len  | allocate a ascii string on BLOB-HERE |
 
 `HERE` returns the address of the next free cell, and `ALLOC` increments the data pointer by a number of cells.
 

@@ -73,6 +73,18 @@
     THEN
 ; IMMEDIATE
 
+:  BLOB-ALLOC ( numbytes -- )
+    BLOB-LEN @ + BLOB-LEN !
+;
+
+: s" PARSE-STRING ( string -- addr len )
+    dup >R 
+    BLOB-HERE dup >R 
+    swap dup BLOB-ALLOC
+    COPY-BYTES
+    R> R>
+; IMMEDIATE
+
 \ word to do shell commands
 
 : SYS" PARSE-STRING ( string" -- )
@@ -159,7 +171,9 @@
 ;
 
 : ERASE ( n -- )
+    dup
     BLOCK BLOCK-SIZE 0 FILL
+    ." BLOCK " . ." erased" cr
 ;
 
 \ to easily access skforth settings. You will need to restart skforth for new settings to take place though
